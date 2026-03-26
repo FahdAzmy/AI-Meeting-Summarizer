@@ -103,7 +103,10 @@ app.add_middleware(
 )
 
 
+from src.routes.api import api_router
+
 # Include routers
+app.include_router(api_router, prefix="/api")
 
 
 @app.get("/")
