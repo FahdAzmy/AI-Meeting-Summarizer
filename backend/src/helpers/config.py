@@ -37,6 +37,11 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str
 
+    # MongoDB
+    MONGO_URI: str = "mongodb://localhost:27017"
+    MONGO_DB: str = "ai_summerizer"
+    MONGO_TEST_DB: str = "ai_summerizer_test"
+
     def get_database_url(self) -> str:
         # If DATABASE_URL is provided in .env, use it (and make sure it uses asyncpg)
         if self.DATABASE_URL:
