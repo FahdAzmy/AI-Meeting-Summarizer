@@ -2,17 +2,14 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.helpers.db import get_db, engine, Base
+from src.helpers.db import init_db, get_client
 from src.helpers.config import Settings
 from src.helpers.logging_config import get_logger, sanitize_headers, generate_request_id
 
-# Import models to register them with Base.metadata
-from src.models.db_scheams.user import User  # noqa: F401
 
 logger = get_logger("app")
 
@@ -72,13 +69,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create database tables on startup."""
-    logger.info("Application starting — creating database tables …")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables ready — application is up")
+    """Initialize database connection on startup."""
+    logger.info("Application starting — connecting to MongoDB …")
+    await init_db()
+    logger.info("Database connected — application is up")
     yield
-    logger.info("Application shutting down")
+    client = get_client()
+    if client:
+        client.close()
+    logger.info("Application shutting down, database connection closed")
 
 
 # ── FastAPI App ──────────────────────────────────────────────────────────────
@@ -117,13 +116,14 @@ async def root():
 
 
 @app.get("/health")
-async def health_check(db: AsyncSession = Depends(get_db)):
+async def health_check():
     """
     Check if the server and database are running correctly.
     """
     try:
-        # Execute a simple query to verify database connectivity
-        await db.execute(text("SELECT 1"))
+        client = get_client()
+        # Execute a simple command to verify database connectivity
+        await client.admin.command('ping')
         logger.info("Health check passed — database connected")
         return {
             "status": "online",
