@@ -1,0 +1,28 @@
+{
+  "google_meet": {
+    "dismiss_dialog": "[data-mdc-dialog-action='ok']",
+    "mute_mic": "[data-is-muted='false'][aria-label*='microphone']",
+    "mute_cam": "[data-is-muted='false'][aria-label*='camera']",
+    "join_button": "[data-call-ended='false'] [jsname='Qx7uuf']",
+    "join_now_button": "[jsname='V67aGc']",
+    "end_screen": "[data-call-ended='true']",
+    "end_text": "//span[contains(text(), 'You left the meeting')]"
+  },
+  "zoom": {
+    "join_audio_button": ".join-audio-by-voip__join-btn",
+    "name_field": "#inputname",
+    "join_button": ".preview-join-button",
+    "waiting_room_indicator": "#wc-footer .meeting-info-icon",
+    "waiting_room_text": "//p[contains(text(), \"Please wait, the meeting host will let you in\")]",
+    "meeting_end_dialog": ".zm-modal-body-title",
+    "meeting_end_text": "//span[contains(text(), 'This meeting has been ended')]"
+  },
+  "teams": {
+    "use_browser_link": "a[data-tid='joinOnWeb']",
+    "continue_without_audio": "[data-tid='prejoin-ok-cta']",
+    "join_button": "[data-tid='call-join-button']",
+    "mute_mic": "[data-tid='toggle-mute']",
+    "leave_call_button": "[data-tid='leave-call-btn']",
+    "meeting_end_text": "//span[contains(text(), 'The call ended')]"
+  }
+}
