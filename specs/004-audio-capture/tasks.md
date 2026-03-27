@@ -21,9 +21,9 @@ description: "Task list for Audio Capture Module feature implementation"
 
 **Purpose**: Python module configuration and static payload preparation.
 
-- [ ] T001 Ensure `obsws-python` dependency is added to the project's root `requirements.txt`.
-- [ ] T002 Add `AudioCapture` specific connection configurations (host, port, password, output_dir) into the core `config/settings.py` structure.
-- [ ] T003 Create custom exception models (AC-001 through AC-005) inside `modules/errors.py`.
+- [x] T001 Ensure `obsws-python` dependency is added to the project's root `requirements.txt`.
+- [x] T002 Add `AudioCapture` specific connection configurations (host, port, password, output_dir) into the core `config/settings.py` structure.
+- [x] T003 Create custom exception models (AC-001 through AC-005) inside `modules/errors.py`.
 
 ---
 
@@ -33,8 +33,8 @@ description: "Task list for Audio Capture Module feature implementation"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Build initial `AudioCapture` class scaffold with empty `__init__`, `start`, `stop`, and `healthcheck` declarations in `modules/audio_capture.py`.
-- [ ] T005 [P] Setup base Pytest fixture that accurately mocks `obsws_python.ReqClient` structurally within `tests/unit/test_audio_capture.py`.
+- [x] T004 Build initial `AudioCapture` class scaffold with empty `__init__`, `start`, `stop`, and `healthcheck` declarations in `modules/audio_capture.py`.
+- [x] T005 [P] Setup base Pytest fixture that accurately mocks `obsws_python.ReqClient` structurally within `tests/unit/test_audio_capture.py`.
 
 **Checkpoint**: Core module structure instantiated and test suite runs blindly against fake OBS sockets natively.
 
@@ -50,15 +50,15 @@ description: "Task list for Audio Capture Module feature implementation"
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T006 [P] [US1] Unit test `__init__` asserting that `obsws_python.ReqClient` is instantiated using variables mapped from the Config in `tests/unit/test_audio_capture.py`
-- [ ] T007 [P] [US1] Unit test `start()` asserting it calls `client.start_record()` over the mocked socket in `tests/unit/test_audio_capture.py`
-- [ ] T008 [P] [US1] Unit test `stop()` asserting it calls `client.stop_record()` and parses the mock boolean output successfully in `tests/unit/test_audio_capture.py`
+- [x] T006 [P] [US1] Unit test `__init__` asserting that `obsws_python.ReqClient` is instantiated using variables mapped from the Config in `tests/unit/test_audio_capture.py`
+- [x] T007 [P] [US1] Unit test `start()` asserting it calls `client.start_record()` over the mocked socket in `tests/unit/test_audio_capture.py`
+- [x] T008 [P] [US1] Unit test `stop()` asserting it calls `client.stop_record()` and parses the mock boolean output successfully in `tests/unit/test_audio_capture.py`
 
 ### Implementation for User Story 1
 
-- [ ] T009 [US1] Implement `__init__` in `modules/audio_capture.py` applying `Config` credentials.
-- [ ] T010 [US1] Implement `start()` routing execution strings down to the `ReqClient` in `modules/audio_capture.py`.
-- [ ] T011 [US1] Implement `stop()` fetching and parsing the active payload paths returning the string file path down inside `modules/audio_capture.py`.
+- [x] T009 [US1] Implement `__init__` in `modules/audio_capture.py` applying `Config` credentials.
+- [x] T010 [US1] Implement `start()` routing execution strings down to the `ReqClient` in `modules/audio_capture.py`.
+- [x] T011 [US1] Implement `stop()` fetching and parsing the active payload paths returning the string file path down inside `modules/audio_capture.py`.
 
 **Checkpoint**: The Python module bridges execution states dynamically over standard WebSockets.
 
@@ -72,15 +72,15 @@ description: "Task list for Audio Capture Module feature implementation"
 
 ### Tests for User Story 2  ⚠️
 
-- [ ] T012 [P] [US2] Mock `healthcheck()` asserting it correctly polls `client.get_version()` and returns `True` logically in `tests/unit/test_audio_capture.py`
-- [ ] T013 [P] [US2] Mock socket failure triggering `OBSConnectionError` correctly inside initialization blocks within `tests/unit/test_audio_capture.py`
-- [ ] T014 [P] [US2] Assert that `start()` implicitly triggers and fails if `healthcheck()` is forced false within `tests/unit/test_audio_capture.py`
+- [x] T012 [P] [US2] Mock `healthcheck()` asserting it correctly polls `client.get_version()` and returns `True` logically in `tests/unit/test_audio_capture.py`
+- [x] T013 [P] [US2] Mock socket failure triggering `OBSConnectionError` correctly inside initialization blocks within `tests/unit/test_audio_capture.py`
+- [x] T014 [P] [US2] Assert that `start()` implicitly triggers and fails if `healthcheck()` is forced false within `tests/unit/test_audio_capture.py`
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Implement `healthcheck()` resolving connection tests by throwing an arbitrary ping out the WebSocket inside `modules/audio_capture.py`
-- [ ] T016 [US2] Refactor `__init__` and `healthcheck` to universally catch and specifically route errors as `OBSConnectionError` or `OBSNotRunning` explicitly in `modules/audio_capture.py`
-- [ ] T017 [US2] Wrap file path directory writes asserting `Config.RECORDINGS_DIR` exists natively before executing writes in `modules/audio_capture.py`
+- [x] T015 [US2] Implement `healthcheck()` resolving connection tests by throwing an arbitrary ping out the WebSocket inside `modules/audio_capture.py`
+- [x] T016 [US2] Refactor `__init__` and `healthcheck` to universally catch and specifically route errors as `OBSConnectionError` or `OBSNotRunning` explicitly in `modules/audio_capture.py`
+- [x] T017 [US2] Wrap file path directory writes asserting `Config.RECORDINGS_DIR` exists natively before executing writes in `modules/audio_capture.py`
 
 **Checkpoint**: Application refuses to boot or join meetings without active microphone validations.
 
@@ -94,11 +94,11 @@ description: "Task list for Audio Capture Module feature implementation"
 
 ### Tests for User Story 3  ⚠️
 
-- [ ] T018 [P] [US3] Unit test injecting a mock OS path check resolving a 0-byte file, ensuring `EmptyRecordingError` throws heavily in `tests/unit/test_audio_capture.py`
+- [x] T018 [P] [US3] Unit test injecting a mock OS path check resolving a 0-byte file, ensuring `EmptyRecordingError` throws heavily in `tests/unit/test_audio_capture.py`
 
 ### Implementation for User Story 3
 
-- [ ] T019 [US3] Finalize `stop()` by appending an `os.path.getsize()` check evaluating the returned WebSocket string, throwing `EmptyRecordingError` if bytes equal exactly `0` in `modules/audio_capture.py`
+- [x] T019 [US3] Finalize `stop()` by appending an `os.path.getsize()` check evaluating the returned WebSocket string, throwing `EmptyRecordingError` if bytes equal exactly `0` in `modules/audio_capture.py`
 
 **Checkpoint**: The transcriber engine is guaranteed to never receive silent static payloads.
 
@@ -108,8 +108,8 @@ description: "Task list for Audio Capture Module feature implementation"
 
 **Purpose**: Improvements that affect multiple user stories.
 
-- [ ] T020 Insert `logger.info` and `logger.error` traces specifically tracking payload durations and engine version connections universally across `modules/audio_capture.py`
-- [ ] T021 Execute all pytest mocks and verify coverage guarantees 100% execution on module blocks without any active OBS instances.
+- [x] T020 Insert `logger.info` and `logger.error` traces specifically tracking payload durations and engine version connections universally across `modules/audio_capture.py`
+- [x] T021 Execute all pytest mocks and verify coverage guarantees 100% execution on module blocks without any active OBS instances.
 
 ---
 
