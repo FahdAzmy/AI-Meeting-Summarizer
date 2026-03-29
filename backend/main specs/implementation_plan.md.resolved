@@ -1,0 +1,86 @@
+# Goal Description
+
+The goal is to replace the current heavy desktop dependency (OBS Studio + OBS WebSocket) with a lightweight, user-friendly **Google Chrome Extension (Manifest V3)**. 
+
+This extension will natively capture both the system audio (other people talking on Google Meet) and the user's microphone. It will mix these streams, record them as a `.webm` or `.webm (Opus)` file, and upload the final recording directly to the existing Python FastAPI backend for Deepgram transcription.
+
+This architecture is significantly better for a SaaS deployment as it eliminates the need for users to install or configure desktop recording software.
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Browser Limitation Warning:** This approach will ONLY work for web-based meetings (like Google Meet in the browser, or Zoom Web). It will **not** record meetings if the user opens the standalone Windows Zoom or Microsoft Teams desktop applications. Please confirm this trade-off is acceptable for your graduation project scope.
+
+## Proposed Changes
+
+---
+
+### Phase 1: Chrome Extension Scaffold
+
+The foundation of the Chrome extension using modern Manifest V3 standards.
+
+#### [NEW] `frontend/extension/manifest.json`
+- Define the extension permissions required: `tabCapture` (to record the meeting audio), `activeTab`, `storage`, and `microphone` (via host permissions).
+- Register the Service Worker (background script) and the Popup UI.
+
+#### [NEW] `frontend/extension/popup/index.html` & `popup.js`
+- A minimal UI that drops down when the user clicks the extension icon.
+- Features a simple big "Start Recording" and "Finish Meeting" button.
+- Communicates with the background service worker to start/stop the capture.
+
+---
+
+### Phase 2: Audio Capture & Mixing Engine
+
+The core logic to capture both sides of the conversation. Because Chrome separates tab audio and microphone audio, we must mix them manually.
+
+#### [NEW] `frontend/extension/background/capture.js`
+- **Tab Capture:** Call `chrome.tabCapture.getMediaStreamId()` to get permission to record the current Google Meet tab.
+- **Microphone Capture:** Call `navigator.mediaDevices.getUserMedia({ audio: true })`.
+- **Audio Mixing (Web Audio API):**
+  - Create an `AudioContext`.
+  - Create a `MediaStreamAudioSourceNode` for both the tab and the mic.
+  - Route them into a `MediaStreamAudioDestinationNode`.
+- **Recording Engine:**
+  - Pass the mixed destination stream into a `MediaRecorder` instance.
+  - Collect `Blob` data chunks every few seconds.
+
+---
+
+### Phase 3: File Assembly & Backend Upload
+
+Converting the raw browser audio chunks into a format Deepgram can understand.
+
+#### [NEW] `frontend/extension/background/uploader.js`
+- When the meeting ends, stitch the `Blob` chunks into a single `audio/webm` file.
+- Generate a `FormData` object containing the audio file.
+- Use the `fetch()` API to specifically `POST` the file to your Python backend (e.g., `http://localhost:8000/api/meetings/upload`).
+
+---
+
+### Phase 4: Backend Integration
+
+Adapting the Python backend to accept direct file uploads instead of triggering OBS.
+
+#### [MODIFY] `backend/api/routes/meetings.py` (or similar endpoint file)
+- Create a new endpoint: `@router.post("/upload")` that accepts a completely raw `UploadFile` from the Chrome Extension.
+- Save the file temporarily to `d:/mozakra/Gradution Project/project/recordings/`.
+- Pass that file directly to the `Transcription` module (which we just perfected!).
+
+#### [DELETE] `backend/modules/audio_capture.py` (Optional)
+- Unplug the OBS WebSocket logic. We no longer need to command OBS to start or stop, as the Chrome Extension handles the entire recording lifecycle.
+
+## Open Questions
+
+> [!WARNING]
+> 1. **Framework:** Do you want to build this Chrome Extension using plain Vanilla JavaScript/HTML, or do you want to use a framework like React (since you mentioned a "frontend dashboard" in previous specs)?
+> 2. **Authentication:** How will the extension know *who* is uploading the file? Should we build a simple login screen into the extension popup?
+
+## Verification Plan
+
+### Manual Verification
+1. Load the "Unpacked Extension" directly into Google Chrome via `chrome://extensions`.
+2. Open a test Google Meet call with a friend.
+3. Click "Start Recording" in the extension popup. Talk for 1 minute (make sure your friend talks as well).
+4. Click "Finish Meeting".
+5. Verify that the Python backend successfully receives the upload, transcribes it via Deepgram, and outputs a `TranscriptResult` that contains both your voice and your friend's voice.

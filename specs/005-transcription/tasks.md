@@ -21,9 +21,9 @@ description: "Task list for Transcription Module feature implementation"
 
 **Purpose**: Python dependency inclusions and fundamental structures natively.
 
-- [ ] T001 Inject `openai`, `deepgram-sdk`, `assemblyai`, and `requests` mapping directly into the root `requirements.txt` file.
-- [ ] T002 Aggregate the STT API Key structs (`WHISPER_API_KEY`, etc.) inside environment namespaces and expose them natively via `config/settings.py`.
-- [ ] T003 Construct the Exception structs (TR-001 through TR-005) inheriting from Python base `Exception` cleanly inside `modules/stt_errors.py`.
+- [X] T001 Inject `openai`, `deepgram-sdk`, `assemblyai`, and `requests` mapping directly into the root `requirements.txt` file.
+- [X] T002 Aggregate the STT API Key structs (`WHISPER_API_KEY`, etc.) inside environment namespaces and expose them natively via `config/settings.py`.
+- [X] T003 Construct the Exception structs (TR-001 through TR-005) inheriting from Python base `Exception` cleanly inside `modules/stt_errors.py`.
 
 ---
 
@@ -33,10 +33,10 @@ description: "Task list for Transcription Module feature implementation"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Blueprint the empty `Transcription` router class handling `__init__(provider="whisper")` mapping the respective config API keys in `modules/transcription.py`.
-- [ ] T005 [P] Setup base `pytest` fixtures asserting explicit isolation via `mock` preventing live environment credentials leaking within `tests/unit/test_transcription.py`.
+- [X] T004 Blueprint the empty `Transcription` router class handling `__init__(provider="whisper")` mapping the respective config API keys in `modules/transcription.py`.
+- [X] T005 [P] Setup base `pytest` fixtures asserting explicit isolation via `mock` preventing live environment credentials leaking within `tests/unit/test_transcription.py`.
 
-**Checkpoint**: Application boots natively and testing configurations run cleanly without active payloads.
+**Checkpoint**: Application boots natively and testing configurations run cleanly without active payloads. ✅
 
 ---
 
@@ -50,19 +50,19 @@ description: "Task list for Transcription Module feature implementation"
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T006 [P] [US1] Unit test `_transcribe_whisper` by asserting `mock` intercepts the OpenAI client explicitly returning simulated output in `tests/unit/test_transcription.py`
-- [ ] T007 [P] [US1] Unit test `_transcribe_deepgram` returning simulated diarization JSON outputs securely isolating the SDK inside `tests/unit/test_transcription.py`
-- [ ] T008 [P] [US1] Unit test `_transcribe_assemblyai` mirroring standard responses within `tests/unit/test_transcription.py`
-- [ ] T009 [P] [US1] Assert precisely that `_normalise` digests all three mock variants actively transforming them mathematically identically down to the `TranscriptResult` object inside `tests/unit/test_transcription.py`
+- [X] T006 [P] [US1] Unit test `_transcribe_whisper` by asserting `mock` intercepts the OpenAI client explicitly returning simulated output in `tests/unit/test_transcription.py`
+- [X] T007 [P] [US1] Unit test `_transcribe_deepgram` returning simulated diarization JSON outputs securely isolating the SDK inside `tests/unit/test_transcription.py`
+- [X] T008 [P] [US1] Unit test `_transcribe_assemblyai` mirroring standard responses within `tests/unit/test_transcription.py`
+- [X] T009 [P] [US1] Assert precisely that `_normalise` digests all three mock variants actively transforming them mathematically identically down to the `TranscriptResult` object inside `tests/unit/test_transcription.py`
 
 ### Implementation for User Story 1
 
-- [ ] T010 [US1] Structure OpenAI's Python object SDK mapped specifically through `_transcribe_whisper` natively executing uploads logically in `modules/transcription.py`.
-- [ ] T011 [US1] Construct the `_transcribe_deepgram` payload method asserting proper URL HTTP requests explicitly demanding "diarize=true" in `modules/transcription.py`.
-- [ ] T012 [US1] Scaffold the explicit async polling behaviors via `_transcribe_assemblyai` actively resolving audio results in `modules/transcription.py`.
-- [ ] T013 [US1] Engineer the `_normalise` helper bridging specific raw variables into `TranscriptResult` boundaries directly inside `modules/transcription.py`.
+- [X] T010 [US1] Structure OpenAI's Python object SDK mapped specifically through `_transcribe_whisper` natively executing uploads logically in `modules/transcription.py`.
+- [X] T011 [US1] Construct the `_transcribe_deepgram` payload method asserting proper URL HTTP requests explicitly demanding "diarize=true" in `modules/transcription.py`.
+- [X] T012 [US1] Scaffold the explicit async polling behaviors via `_transcribe_assemblyai` actively resolving audio results in `modules/transcription.py`.
+- [X] T013 [US1] Engineer the `_normalise` helper bridging specific raw variables into `TranscriptResult` boundaries directly inside `modules/transcription.py`.
 
-**Checkpoint**: The Python orchestrator natively standardizes multi-provider data structures effectively.
+**Checkpoint**: The Python orchestrator natively standardizes multi-provider data structures effectively. ✅
 
 ---
 
@@ -74,16 +74,16 @@ description: "Task list for Transcription Module feature implementation"
 
 ### Tests for User Story 2  ⚠️
 
-- [ ] T014 [P] [US2] Mock explicit 408 Requests Timeouts verifying the orchestrator delays sequentially (`sleep`) 3 attempts before raising `STTTimeoutError` inside `tests/unit/test_transcription.py`
-- [ ] T015 [P] [US2] Assert exactly that pushing a simulated `HTTP 429` status flag triggers the top level `provider` switch actively targeting the secondary fallback natively in `tests/unit/test_transcription.py`
-- [ ] T016 [P] [US2] Mock an `HTTP 401 Unauthorized` check asserting an instant pipeline dropout without backoff triggering cleanly in `tests/unit/test_transcription.py`
+- [X] T014 [P] [US2] Mock explicit 408 Requests Timeouts verifying the orchestrator delays sequentially (`sleep`) 3 attempts before raising `STTTimeoutError` inside `tests/unit/test_transcription.py`
+- [X] T015 [P] [US2] Assert exactly that pushing a simulated `HTTP 429` status flag triggers the top level `provider` switch actively targeting the secondary fallback natively in `tests/unit/test_transcription.py`
+- [X] T016 [P] [US2] Mock an `HTTP 401 Unauthorized` check asserting an instant pipeline dropout without backoff triggering cleanly in `tests/unit/test_transcription.py`
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Engineer a dynamic retry loop executing exponential scaling timeouts securely tracking attempt bounds actively prior to API executions natively in `modules/transcription.py`.
-- [ ] T018 [US2] Finalize the `transcribe(audio_path)` controller explicitly mapping the core Engine Router checking dynamically against 429 API responses and swapping standard methods implicitly in `modules/transcription.py`.
+- [X] T017 [US2] Engineer a dynamic retry loop executing exponential scaling timeouts securely tracking attempt bounds actively prior to API executions natively in `modules/transcription.py`.
+- [X] T018 [US2] Finalize the `transcribe(audio_path)` controller explicitly mapping the core Engine Router checking dynamically against 429 API responses and swapping standard methods implicitly in `modules/transcription.py`.
 
-**Checkpoint**: Transcription process maintains robust resiliency despite volatile web circumstances.
+**Checkpoint**: Transcription process maintains robust resiliency despite volatile web circumstances. ✅
 
 ---
 
@@ -95,13 +95,13 @@ description: "Task list for Transcription Module feature implementation"
 
 ### Tests for User Story 3  ⚠️
 
-- [ ] T019 [P] [US3] Override `os.path.getsize` via mock injecting `26000000` bytes (26MB) natively guaranteeing `AudioTooLargeError` triggers independently inside `tests/unit/test_transcription.py`
+- [X] T019 [P] [US3] Override `os.path.getsize` via mock injecting `26000000` bytes (26MB) natively guaranteeing `AudioTooLargeError` triggers independently inside `tests/unit/test_transcription.py`
 
 ### Implementation for User Story 3
 
-- [ ] T020 [US3] Instantiate `os.path.getsize(audio_path)` tracking immediately at the top of the `transcribe()` block securely throwing `AudioTooLargeError` natively against thresholds exceeding 25MB limits natively in `modules/transcription.py`.
+- [X] T020 [US3] Instantiate `os.path.getsize(audio_path)` tracking immediately at the top of the `transcribe()` block securely throwing `AudioTooLargeError` natively against thresholds exceeding 25MB limits natively in `modules/transcription.py`.
 
-**Checkpoint**: File structures successfully assert parameter constraints inherently saving orchestrator upload overheads.
+**Checkpoint**: File structures successfully assert parameter constraints inherently saving orchestrator upload overheads. ✅
 
 ---
 
@@ -109,8 +109,8 @@ description: "Task list for Transcription Module feature implementation"
 
 **Purpose**: Improvements that affect multiple user stories natively.
 
-- [ ] T021 Incorporate explicit logic tracking execution metric latencies cleanly attaching `logger.info()` boundaries spanning exact payload responses effectively inside `modules/transcription.py`.
-- [ ] T022 Assert strict Python type hinting maps explicitly matching `data-model.md` structs inherently preventing downstream data bleeding accurately.
+- [X] T021 Incorporate explicit logic tracking execution metric latencies cleanly attaching `logger.info()` boundaries spanning exact payload responses effectively inside `modules/transcription.py`.
+- [X] T022 Assert strict Python type hinting maps explicitly matching `data-model.md` structs inherently preventing downstream data bleeding accurately.
 
 ---
 
