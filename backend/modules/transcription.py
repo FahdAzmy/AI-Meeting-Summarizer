@@ -86,24 +86,33 @@ class Transcription:
     provider : str
         Starting provider: ``"whisper"`` (default), ``"deepgram"``,
         or ``"assemblyai"``.
+    language_code : str | None
+        ISO 639-1 language code to force transcription language (e.g. ``"en"``
+        for English, ``"ar"`` for Arabic). When ``None``, auto-detection is
+        used. Set this explicitly to prevent mis-detection with accented speech.
     """
 
     SUPPORTED_PROVIDERS = {"whisper", "deepgram", "assemblyai"}
 
-    def __init__(self, provider: str = "whisper") -> None:
+    def __init__(self, provider: str = "whisper", language_code: str | None = None) -> None:
         if provider not in self.SUPPORTED_PROVIDERS:
             raise ValueError(
                 f"Unsupported provider '{provider}'. "
                 f"Choose from: {self.SUPPORTED_PROVIDERS}"
             )
         self.provider: str = provider
+        self.language_code: str | None = language_code
         cfg = Config()
         self.api_keys: dict[str, str] = {
             "whisper": cfg.WHISPER_API_KEY,
             "deepgram": cfg.DEEPGRAM_API_KEY,
             "assemblyai": cfg.ASSEMBLYAI_API_KEY,
         }
-        logger.info("Transcription router initialised with provider='%s'.", provider)
+        logger.info(
+            "Transcription router initialised with provider='%s', language_code=%s.",
+            provider,
+            language_code or "auto-detect",
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -323,6 +332,9 @@ class Transcription:
         """Submit audio to AssemblyAI and poll until the transcript is ready.
 
         Uses the ``assemblyai`` SDK which handles upload + polling internally.
+        If ``self.language_code`` is set, that language is forced (prevents
+        mis-detection for accented speech). When None, proper language
+        detection is enabled via ``language_detection=True``.
 
         Returns
         -------
@@ -337,7 +349,28 @@ class Transcription:
         logger.info("Calling AssemblyAI (async upload + poll): file='%s'.", audio_path)
         try:
             aai.settings.api_key = self.api_keys["assemblyai"]
-            cfg = aai.TranscriptionConfig(speaker_labels=True, speech_models=[aai.SpeechModel.universal])
+
+            if self.language_code:
+                # Explicit language: no auto-detection, transcribe exactly in this language.
+                # universal-3-pro is fine here since we're forcing the language.
+                logger.info("[ST] Forcing language_code='%s' for AssemblyAI.", self.language_code)
+                cfg = aai.TranscriptionConfig(
+                    speaker_labels=True,
+                    speech_models=[aai.SpeechModel.universal],
+                    language_code=self.language_code,
+                )
+            else:
+                # Auto-detect mode: use "universal-2" instead of "universal-3-pro".
+                # universal-3-pro (SpeechModel.universal) has an Arabic bias for
+                # Arabic-accented English speakers. universal-2 has more balanced
+                # language detection for bilingual environments.
+                logger.info("[ST] language_code not set – using universal-2 with language detection.")
+                cfg = aai.TranscriptionConfig(
+                    speaker_labels=True,
+                    speech_models=["universal-2"],
+                    language_detection=True,
+                )
+
             transcriber = aai.Transcriber(config=cfg)
             transcript = transcriber.transcribe(audio_path)
 
