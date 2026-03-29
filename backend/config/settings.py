@@ -29,15 +29,32 @@ class Config(BaseSettings):
     # ------------------------------------------------------------------
     # OBS WebSocket – Audio Capture Module
     # ------------------------------------------------------------------
-    OBS_HOST: str = Field(default="localhost", description="OBS WebSocket server hostname.")
+    OBS_HOST: str = Field(
+        default="localhost", description="OBS WebSocket server hostname."
+    )
     OBS_PORT: int = Field(default=4455, description="OBS WebSocket server port.")
-    OBS_PASSWORD: str = Field(default="", description="OBS WebSocket authentication password.")
+    OBS_PASSWORD: str = Field(
+        default="", description="OBS WebSocket authentication password."
+    )
 
     # Directory where OBS will save the raw recordings.
     # Defaults to <project_root>/recordings/
     RECORDINGS_DIR: str = Field(
         default=str(Path(__file__).resolve().parent.parent / "recordings"),
         description="Absolute path to the directory that stores audio recordings.",
+    )
+
+    # ------------------------------------------------------------------
+    # STT (Speech-to-Text) API Keys – Transcription Module
+    # ------------------------------------------------------------------
+    WHISPER_API_KEY: str = Field(
+        default="", description="OpenAI API key used for Whisper transcription."
+    )
+    DEEPGRAM_API_KEY: str = Field(
+        default="", description="Deepgram API key for diarized transcription."
+    )
+    ASSEMBLYAI_API_KEY: str = Field(
+        default="", description="AssemblyAI API key for async transcription polling."
     )
 
     # ------------------------------------------------------------------
