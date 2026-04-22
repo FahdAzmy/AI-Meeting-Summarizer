@@ -7,7 +7,16 @@ pipeline.
 Sections
 --------
   - OBS / Audio Capture  : AC-specific WebSocket credentials & output path
-  - (extend here for other modules as needed)
+  - STT                  : Speech-to-text API keys (Whisper, Deepgram, AssemblyAI)
+  - LLM                  : Provider-agnostic LLM settings (any OpenAI-compatible API)
+
+Provider Examples (set in .env)
+--------------------------------
+  OpenAI      : LLM_BASE_URL=https://api.openai.com/v1
+  OpenRouter  : LLM_BASE_URL=https://openrouter.ai/api/v1
+  Groq        : LLM_BASE_URL=https://api.groq.com/openai/v1
+  Mistral     : LLM_BASE_URL=https://api.mistral.ai/v1
+  Ollama      : LLM_BASE_URL=http://localhost:11434/v1
 
 Usage
 -----
@@ -55,6 +64,40 @@ class Config(BaseSettings):
     )
     ASSEMBLYAI_API_KEY: str = Field(
         default="", description="AssemblyAI API key for async transcription polling."
+    )
+
+    # ------------------------------------------------------------------
+    # LLM – Summarisation Module (provider-agnostic)
+    # Supports any OpenAI-compatible API: OpenAI, OpenRouter, Groq,
+    # Mistral, Ollama (local), Together AI, Anyscale, etc.
+    # ------------------------------------------------------------------
+    LLM_API_KEY: str = Field(
+        default="",
+        description="API key for the chosen LLM provider.",
+    )
+    LLM_BASE_URL: str = Field(
+        default="https://api.openai.com/v1",
+        description=(
+            "Base URL of the OpenAI-compatible LLM API. "
+            "Change this to switch providers without touching any code. "
+            "Examples: https://openrouter.ai/api/v1 (OpenRouter), "
+            "https://api.groq.com/openai/v1 (Groq), "
+            "http://localhost:11434/v1 (Ollama)."
+        ),
+    )
+    LLM_MODEL: str = Field(
+        default="gpt-4o",
+        description=(
+            "Model identifier passed to the provider. "
+            "OpenAI: 'gpt-4o'. "
+            "OpenRouter: 'openai/gpt-4o' or 'anthropic/claude-3-haiku'. "
+            "Groq: 'llama3-70b-8192'. "
+            "Ollama: 'llama3'."
+        ),
+    )
+    LLM_TIMEOUT: int = Field(
+        default=120,
+        description="Maximum seconds to wait for an LLM response before raising LLMTimeoutError.",
     )
 
     # ------------------------------------------------------------------
