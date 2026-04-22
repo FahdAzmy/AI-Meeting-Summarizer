@@ -94,7 +94,7 @@ class Transcription:
 
     SUPPORTED_PROVIDERS = {"whisper", "deepgram", "assemblyai"}
 
-    def __init__(self, provider: str = "whisper", language_code: str | None = None) -> None:
+    def __init__(self, provider: str = "whisper", language_code: str | None = "en") -> None:
         if provider not in self.SUPPORTED_PROVIDERS:
             raise ValueError(
                 f"Unsupported provider '{provider}'. "
@@ -246,12 +246,16 @@ class Transcription:
         try:
             client = openai.OpenAI(api_key=self.api_keys["whisper"])
             with open(audio_path, "rb") as audio_file:
-                response = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file,
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"],
-                )
+                kwargs: dict[str, Any] = {
+                    "model": "whisper-1",
+                    "file": audio_file,
+                    "response_format": "verbose_json",
+                    "timestamp_granularities": ["segment"],
+                }
+                if self.language_code:
+                    kwargs["language"] = self.language_code
+
+                response = client.audio.transcriptions.create(**kwargs)
             # SDK returns a Transcription object; convert to dict for normalisation
             raw: dict[str, Any] = {
                 "text": response.text,
@@ -293,7 +297,12 @@ class Transcription:
         STTProviderError
             On other HTTP errors or network exceptions.
         """
-        url = "https://api.deepgram.com/v1/listen?model=nova-3&diarize=true&punctuate=true&detect_language=true&smart_format=true"
+        url = "https://api.deepgram.com/v1/listen?model=nova-3&diarize=true&punctuate=true&smart_format=true"
+        if self.language_code:
+            url += f"&language={self.language_code}"
+        else:
+            url += "&detect_language=true"
+
         # Dynamically determine content type from file extension (e.g. .mp4 -> video/mp4)
         mime_type, _ = mimetypes.guess_type(audio_path)
         content_type = mime_type if mime_type else "audio/wav"

@@ -82,6 +82,20 @@ class MeetingReportSchema(BaseModel):
     follow_up: list[str] = Field(default_factory=list)
 
 
+class SpeakerTurn(BaseModel):
+    """A single conversation turn identified by the LLM from transcript text."""
+
+    speaker: str = Field(..., description="Speaker name or label (e.g. 'Mr. Ahmed', 'Speaker 1').")
+    text: str = Field(..., description="The exact text spoken in this turn.")
+
+
+class SpeakerDetectionSchema(BaseModel):
+    """Strict Pydantic schema for LLM-based text speaker detection output."""
+
+    turns: list[SpeakerTurn] = Field(default_factory=list)
+    speakers_identified: int = Field(0, description="Total unique speakers detected.")
+
+
 # ---------------------------------------------------------------------------
 # Speaker participation analytics helpers
 # ---------------------------------------------------------------------------
@@ -95,9 +109,9 @@ def _analyse_participation(segments: list[dict[str, Any]]) -> dict | None:
     ----------
     segments : list of dicts
         Each segment is expected to have at least:
-          - ``speaker`` (str)  e.g. "Speaker 0"
-          - ``start``   (float) start time in seconds
-          - ``end``     (float) end time in seconds
+          - ``speaker``    (str)   e.g. "Speaker 0"
+          - ``start_time`` (float) start time in seconds
+          - ``end_time``   (float) end time in seconds
 
     Returns
     -------
@@ -117,7 +131,10 @@ def _analyse_participation(segments: list[dict[str, Any]]) -> dict | None:
 
     for seg in diarised:
         speaker = seg["speaker"]
-        duration = float(seg.get("end", 0)) - float(seg.get("start", 0))
+        # Support both key conventions: start_time/end_time (normalised) and start/end (raw)
+        start = float(seg.get("start_time", seg.get("start", 0)))
+        end = float(seg.get("end_time", seg.get("end", 0)))
+        duration = end - start
         speaker_time[speaker] = speaker_time.get(speaker, 0.0) + max(duration, 0.0)
         speaker_turns[speaker] = speaker_turns.get(speaker, 0) + 1
 
@@ -295,6 +312,148 @@ class Summarisation:
             ) from exc
 
     # ------------------------------------------------------------------
+    # LLM-based speaker detection fallback
+    # ------------------------------------------------------------------
+
+    def _detect_speakers_from_text(
+        self, transcript: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """
+        Use the LLM to split transcript text into per-speaker conversation turns.
+
+        Unlike STT diarisation which relies on audio signals, this method analyses
+        the **text content** to identify speakers from contextual clues: names
+        mentioned, greeting patterns, question-answer flow, and role references.
+
+        This is critical when STT sees only 1 speaker (e.g. shared microphone)
+        but the text clearly contains multiple participants.
+
+        The method distributes the total meeting duration proportionally based
+        on word count per speaker turn.
+
+        Parameters
+        ----------
+        transcript : dict
+            The standardised TranscriptResult dict.
+
+        Returns
+        -------
+        list[dict]
+            Synthetic segments with speaker labels and proportional timestamps.
+            Falls back to the original segments unchanged if detection fails.
+        """
+        full_text = transcript.get("full_text", "")
+        if not full_text.strip():
+            return transcript.get("segments", [])
+
+        total_duration = float(transcript.get("duration_seconds", 0.0))
+
+        system_prompt = (
+            "You are an expert meeting analyst specialising in speaker identification. "
+            "Below is a meeting transcript. The speech-to-text system recorded everything "
+            "as a single block of text without identifying individual speakers.\n\n"
+            "Your task is to SPLIT this text into individual conversation turns and identify "
+            "who is speaking in each turn using contextual clues:\n"
+            "  - Names mentioned (e.g. 'Thanks Ahmed', 'Hi Mr. Fahd')\n"
+            "  - Greeting and farewell patterns (first speaker usually greets)\n"
+            "  - Question-answer pairs (different speakers)\n"
+            "  - Role references ('As the manager...', 'I finished my task...')\n"
+            "  - Instructions vs. status updates (manager gives orders, team reports)\n\n"
+            "RULES:\n"
+            "1. Split the text at natural speaker change points.\n"
+            "2. ALWAYS use the participant's REAL NAME as the speaker label. "
+            "Look for names in greetings (e.g. 'Hello Mr. Fahd'), addresses "
+            "(e.g. 'Okay Mr. Ahmed'), and references throughout the text. "
+            "Only use generic labels like 'Speaker 1' as a LAST RESORT when "
+            "absolutely no name can be found anywhere in the transcript.\n"
+            "3. Be consistent - same person must always get the same name label.\n"
+            "4. Each turn's 'text' must be the EXACT words from the transcript (no rewording).\n"
+            "5. The concatenation of all turns must reproduce the full transcript.\n"
+            "6. Minimum 2 turns if you detect at least 2 different speakers.\n\n"
+            "Your response MUST be valid JSON matching this schema exactly:\n"
+            "{\n"
+            '  "turns": [{"speaker": "<name>", "text": "<exact words from transcript>"}, ...],\n'
+            '  "speakers_identified": <int>\n'
+            "}\n"
+            "Return ONLY the JSON object."
+        )
+
+        user_prompt = f"Full meeting transcript:\n\n{full_text}"
+
+        logger.info(
+            "[SM] Text speaker detection: sending full transcript to LLM (%d chars).",
+            len(full_text),
+        )
+
+        try:
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.1,  # very low - factual inference
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    timeout=self._timeout,
+                )
+            except openai.BadRequestError:
+                logger.warning(
+                    "[SM] Text speaker detection: JSON Mode unsupported - retrying."
+                )
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=0.1,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    timeout=self._timeout,
+                )
+
+            raw_content = response.choices[0].message.content or ""
+            payload = json.loads(raw_content)
+            detection = SpeakerDetectionSchema(**payload)
+
+            logger.info(
+                "[SM] Text speaker detection complete: %d speakers, %d turns.",
+                detection.speakers_identified,
+                len(detection.turns),
+            )
+
+            if not detection.turns:
+                return transcript.get("segments", [])
+
+            # Distribute total_duration proportionally by word count per turn
+            total_words = sum(len(t.text.split()) for t in detection.turns)
+            if total_words == 0:
+                total_words = 1  # safety
+
+            enriched_segments: list[dict[str, Any]] = []
+            current_time = 0.0
+
+            for turn in detection.turns:
+                word_count = len(turn.text.split())
+                turn_duration = (word_count / total_words) * total_duration if total_duration > 0 else 1.0
+
+                enriched_segments.append({
+                    "speaker": turn.speaker,
+                    "start_time": round(current_time, 3),
+                    "end_time": round(current_time + turn_duration, 3),
+                    "text": turn.text,
+                })
+                current_time += turn_duration
+
+            return enriched_segments
+
+        except Exception as exc:
+            # Speaker detection is best-effort - never break the pipeline
+            logger.warning(
+                "[SM] Text speaker detection failed (non-fatal): %s", exc
+            )
+            return transcript.get("segments", [])
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -332,12 +491,33 @@ class Summarisation:
         logger.info("[SM] Starting summarisation pipeline.")
         structured = self._generate_summary(transcript)
 
-        # --- Speaker analytics (pure math, no LLM) ---
+        # --- Speaker analytics (two-layer approach) ---
         segments = transcript.get("segments", [])
         speaker_stats: dict | None = None
+        text_speaker_analysis: dict | None = None
+
+        # Layer 1: STT audio-based diarisation (pure math, no LLM cost)
         if transcript.get("diarisation_available") and segments:
-            logger.info("[SM] Computing speaker participation analytics.")
+            logger.info("[SM] Computing speaker analytics from STT diarisation data.")
             speaker_stats = _analyse_participation(segments)
+            if speaker_stats:
+                speaker_stats["detection_method"] = "stt_diarisation"
+
+        # Layer 2: LLM text-based context analysis (ALWAYS runs when segments exist)
+        # This catches cases where STT sees 1 speaker (shared mic) but the text
+        # clearly contains multiple participants (e.g. "Hi Ahmed" / "Thanks Fahd").
+        if segments:
+            logger.info(
+                "[SM] Running LLM-based text speaker analysis (context detection)."
+            )
+            enriched_segments = self._detect_speakers_from_text(transcript)
+            text_speaker_analysis = _analyse_participation(enriched_segments)
+            if text_speaker_analysis:
+                text_speaker_analysis["detection_method"] = "llm_inferred"
+                logger.info(
+                    "[SM] LLM text speaker analysis complete: %d speakers found.",
+                    len(text_speaker_analysis.get("speakers", [])),
+                )
 
         report: dict[str, Any] = {
             "summary": structured.summary,
@@ -345,6 +525,7 @@ class Summarisation:
             "decisions": structured.decisions,
             "follow_up": structured.follow_up,
             "speaker_stats": speaker_stats,
+            "text_speaker_analysis": text_speaker_analysis,
         }
 
         logger.info("[SM] Report generation complete.")

@@ -29,7 +29,7 @@ def run_full_pipeline_demo():
         obs_bot.healthcheck()
         print("      ✅ Connected to OBS successfully.")
 
-        print("      --> STARTING RECORDING. SPEAK ARABIC (or English) FOR 20 SECONDS! <--")
+        print("      --> STARTING RECORDING. SPEAK ENGLISH FOR 20 SECONDS! <--")
         obs_bot.start()
         
         # 20 second countdown
@@ -43,13 +43,11 @@ def run_full_pipeline_demo():
         print(f"      ✅ Audio saved to: {audio_file_path}")
 
         # --- 2. TRANSCRIPTION ---
-        print("\n[2/3] TRANSCRIPTION (Deepgram/AssemblyAI)")
+        print("\n[2/3] TRANSCRIPTION (AssemblyAI – English Only)")
 
-        # language_code options:
-        #   None  → auto-detect from the audio (Arabic or English) ← RECOMMENDED
-        #   "en"  → force English only
-        #   "ar"  → force Arabic only
-        transcriber = Transcription(provider="assemblyai", language_code=None)
+        # language_code defaults to "en" (English only).
+        # The transcription module now enforces English across all providers.
+        transcriber = Transcription(provider="assemblyai")
 
         
         print(f"      Sending audio for speech-to-text (with speaker separation)...")
@@ -58,7 +56,9 @@ def run_full_pipeline_demo():
         elapsed = time.time() - start_time
         
         print(f"      ✅ Transcription finished in {elapsed:.2f} seconds!")
-        print(f"      Language Detected: {transcript_result.get('language')}")
+        print(f"      Language: {transcript_result.get('language')}")
+        print(f"      Provider: {transcript_result.get('provider')}")
+        print(f"      Diarisation available: {transcript_result.get('diarisation_available')}")
         
         # --- 3. SUMMARISATION ---
         print("\n[3/3] SUMMARISATION & ANALYSIS (LLM)")
@@ -99,16 +99,29 @@ def run_full_pipeline_demo():
         for f in report.get("follow_up", []):
             print(f"  - {f}")
             
-        print("\n📊 SPEAKER ANALYTICS (Pure Math):")
+        print("\n📊 SPEAKER ANALYTICS (Layer 1 – Audio Diarisation):")
         print("-" * 20)
         stats = report.get("speaker_stats")
         if stats:
-            print(f"Total meeting duration: {stats.get('total_meeting_duration_sec')} seconds")
-            print(f"Most active speaker: {stats.get('most_active_speaker')}")
+            print("  ℹ️  Speakers identified by STT audio diarisation (pure math)")
+            print(f"  Total meeting duration: {stats.get('total_meeting_duration_sec')} seconds")
+            print(f"  Most active speaker: {stats.get('most_active_speaker')}")
             for spkr in stats.get("speakers", []):
                 print(f"  - {spkr.get('speaker')}: {spkr.get('percentage_of_meeting')}% ({spkr.get('total_speaking_time_sec')}s across {spkr.get('number_of_turns')} turns)")
         else:
-            print("  - Diarisation not available for this recording.")
+            print("  - No STT diarisation data available.")
+
+        print("\n🧠 SPEAKER ANALYTICS (Layer 2 – LLM Text Context):")
+        print("-" * 20)
+        text_stats = report.get("text_speaker_analysis")
+        if text_stats:
+            print("  ℹ️  Speakers identified by LLM from transcript context")
+            print(f"  Total analysed duration: {text_stats.get('total_meeting_duration_sec')} seconds")
+            print(f"  Most active speaker: {text_stats.get('most_active_speaker')}")
+            for spkr in text_stats.get("speakers", []):
+                print(f"  - {spkr.get('speaker')}: {spkr.get('percentage_of_meeting')}% ({spkr.get('total_speaking_time_sec')}s across {spkr.get('number_of_turns')} turns)")
+        else:
+            print("  - LLM could not identify speakers from text context.")
             
         print("\n" + "="*60)
         
