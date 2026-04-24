@@ -9,6 +9,7 @@ Sections
   - OBS / Audio Capture  : AC-specific WebSocket credentials & output path
   - STT                  : Speech-to-text API keys (Whisper, Deepgram, AssemblyAI)
   - LLM                  : Provider-agnostic LLM settings (any OpenAI-compatible API)
+  - Storage & Distribution: MongoDB URI, SMTP sender credentials (Output Storage Module)
 
 Provider Examples (set in .env)
 --------------------------------
@@ -98,6 +99,63 @@ class Config(BaseSettings):
     LLM_TIMEOUT: int = Field(
         default=120,
         description="Maximum seconds to wait for an LLM response before raising LLMTimeoutError.",
+    )
+
+    # ------------------------------------------------------------------
+    # Storage & Distribution – Output Storage Module (OS)
+    # ------------------------------------------------------------------
+    MONGO_URI: str = Field(
+        default="mongodb://localhost:27017",
+        description=(
+            "MongoDB connection URI used by the Beanie ODM. "
+            "Local default: mongodb://localhost:27017. "
+            "Atlas example: mongodb+srv://<user>:<pwd>@<cluster>.mongodb.net/<db>."
+        ),
+    )
+    MONGO_DB: str = Field(
+        default="ai_summarizer",
+        description="MongoDB database name for the meeting documents.",
+    )
+
+    # SMTP credentials for outbound email dispatch (aiosmtplib).
+    # Maps to EMAIL_SENDER / EMAIL_PASSWORD in the .env file.
+    EMAIL_SENDER: str = Field(
+        default="",
+        description=(
+            "SMTP origin address used by OutputStorage.send_email(). "
+            "Example: azmyfahd66@gmail.com"
+        ),
+    )
+    EMAIL_PASSWORD: str = Field(
+        default="",
+        description=(
+            "SMTP authentication credential (app-password or plain password). "
+            "For Gmail, generate a 16-character App Password in your Google Account."
+        ),
+    )
+    EMAIL_SMTP_HOST: str = Field(
+        default="smtp.gmail.com",
+        description="SMTP server hostname. Default: smtp.gmail.com.",
+    )
+    EMAIL_SMTP_PORT: int = Field(
+        default=587,
+        description="SMTP server port (STARTTLS). Default: 587.",
+    )
+
+    # Google Sheets integration – used by OutputStorage._store_to_sheets().
+    GOOGLE_SHEETS_ID: str = Field(
+        default="",
+        description=(
+            "Google Spreadsheet ID (the long string in the Sheets URL). "
+            "Required when backend='google_sheets'."
+        ),
+    )
+    GOOGLE_CREDENTIALS_PATH: str = Field(
+        default="credentials.json",
+        description=(
+            "Absolute or relative path to the Google service-account credentials JSON. "
+            "Defaults to 'credentials.json' in the working directory."
+        ),
     )
 
     # ------------------------------------------------------------------
