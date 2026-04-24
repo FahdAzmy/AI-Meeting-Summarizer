@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meeting Summary</title>
+</head>
+<body style="font-family:Arial,Helvetica,sans-serif;max-width:680px;margin:0 auto;padding:24px;color:#1f2937">
+
+  <!-- ── Header banner ───────────────────────────────────────────────── -->
+  <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:24px 28px;border-radius:8px 8px 0 0">
+    <h1 style="margin:0;color:#ffffff;font-size:22px">&#128203; Meeting Summary</h1>
+    <p style="margin:6px 0 0;color:#bfdbfe;font-size:13px">Powered by AI Meeting Summarizer</p>
+  </div>
+
+  <!-- ── Content card ────────────────────────────────────────────────── -->
+  <div style="background:#ffffff;border:1px solid #e5e7eb;border-top:none;padding:28px;border-radius:0 0 8px 8px">
+
+    <!-- Summary -->
+    <h2 style="color:#1e3a5f;border-bottom:2px solid #e5e7eb;padding-bottom:8px">Summary</h2>
+    <pre style="white-space:pre-wrap;font-family:inherit;font-size:14px;color:#374151;line-height:1.6">{summary}</pre>
+
+    <!-- Key Decisions -->
+    <h2 style="color:#1e3a5f;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-top:28px">&#9989; Key Decisions</h2>
+    {decisions_html}
+
+    <!-- Action Items -->
+    <h2 style="color:#1e3a5f;border-bottom:2px solid #e5e7eb;padding-bottom:8px;margin-top:28px">&#128204; Action Items</h2>
+    {action_table}
+
+    <!-- Follow-up Items (rendered only when non-empty) -->
+    {follow_up_section}
+
+    <!-- Speaker Highlights (rendered only when diarisation available) -->
+    {speaker_html}
+
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────── -->
+  <p style="text-align:center;color:#9ca3af;font-size:12px;margin-top:16px">
+    This email was automatically generated. Do not reply directly.
+  </p>
+
+</body>
+</html>
