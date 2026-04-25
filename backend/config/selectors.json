@@ -8,7 +8,10 @@
     "join_now_button": "[jsname='V67aGc']",
     "ask_to_join_button": "button[jsname='Qx7uuf'], button[data-idom-class*='join']",
     "end_screen": "[data-call-ended='true']",
-    "end_text": "//span[contains(text(), 'You left the meeting')]"
+    "end_text": "//span[contains(text(), 'You left the meeting')]",
+    "alone_banner_text": "//div[contains(text(), 'No one else is in this meeting')] | //span[contains(text(), 'No one else is in this meeting')] | //div[contains(text(), \"You're the only one here\")] | //span[contains(text(), \"You're the only one here\")]",
+    "participant_count": "[data-participant-count]",
+    "leave_call_button": "[jsname='CQylAd'] button[aria-label*='Leave'], button[aria-label='Leave call'], [data-tooltip='Leave call'] button, [jsname='CQylAd']"
   },
   "zoom": {
     "join_audio_button": ".join-audio-by-voip__join-btn",
