@@ -16,8 +16,9 @@ async def init_db(db_name: str = None):
     selected_db = db_name or settings.MONGO_DB
     db = client[selected_db]
     
-    # If Beanie Document models exist, they should be initialized here:
-    # await init_beanie(database=db, document_models=[])
+    # Initialize Beanie Document models
+    from src.models.meeting import Meeting
+    await init_beanie(database=db, document_models=[Meeting])
     
     logger.info("MongoDB connection established")
 

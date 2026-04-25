@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { MeetingForm } from "@/components/dashboard/MeetingForm";
 import { StatusPanel } from "@/components/dashboard/StatusPanel";
 import { api } from "@/lib/api";
@@ -33,10 +33,10 @@ export default function Dashboard() {
     }
   };
 
-  const handlePipelineComplete = () => {
+  const handlePipelineComplete = useCallback(() => {
     showToast("Meeting processing completed!", "success");
     setTimeout(() => router.push("/history"), 2000);
-  };
+  }, [showToast, router]);
 
   return (
     <div className="flex flex-col items-center pt-16 pb-24 px-8 min-h-full">

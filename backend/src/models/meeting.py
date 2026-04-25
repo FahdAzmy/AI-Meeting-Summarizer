@@ -36,12 +36,33 @@ from pydantic import Field
 
 
 class MeetingStatus(str, Enum):
-    """Pipeline lifecycle state for a Meeting document."""
+    """Pipeline lifecycle state for a Meeting document.
 
-    PENDING    = "pending"       # Queued, not yet started
-    PROCESSING = "processing"    # Pipeline running (transcription / summarisation)
-    COMPLETED  = "completed"     # All pipeline stages finished successfully
-    FAILED     = "failed"        # Non-recoverable pipeline error
+    States progress in order through the orchestrator pipeline:
+        PENDING → JOINING → RECORDING → TRANSCRIBING → SUMMARISING
+            → DELIVERING → COMPLETED
+    Any state may transition to FAILED on a non-recoverable error.
+
+    Legacy aliases
+    --------------
+    PROCESSING is retained for backward compatibility with documents
+    written before the fine-grained states were introduced.
+    """
+
+    # ── Coarse legacy states (keep for backward compat) ──────────────────
+    PENDING = "pending"        # Queued, not yet started
+    PROCESSING = "processing"  # Generic "pipeline running" (pre-orchestrator)
+
+    # ── Fine-grained orchestrator states ─────────────────────────────────
+    JOINING = "joining"            # MeetingAccess joining the meeting room
+    RECORDING = "recording"        # AudioCapture actively recording audio
+    TRANSCRIBING = "transcribing"  # Transcription module converting audio→text
+    SUMMARISING = "summarising"    # Summarisation module generating the report
+    DELIVERING = "delivering"      # OutputStorage distributing results
+
+    # ── Terminal states ───────────────────────────────────────────────────
+    COMPLETED = "completed"  # All pipeline stages finished successfully
+    FAILED = "failed"        # Non-recoverable pipeline error
 
 
 class ActionItem(Document):
@@ -54,7 +75,9 @@ class ActionItem(Document):
     # Override to disable Beanie collection-level treatment for sub-docs.
     model_config = {"populate_by_name": True}  # type: ignore[assignment]
 
-    assignee: str = Field(..., description="Person responsible for completing the task.")
+    assignee: str = Field(
+        ..., description="Person responsible for completing the task."
+    )
     task: str = Field(..., description="Description of the task.")
     deadline: Optional[str] = Field(None, description="Target completion date or None.")
 
@@ -93,6 +116,12 @@ class Meeting(Document):
 
     # ── Identity / Metadata ──────────────────────────────────────────────
     title: Optional[str] = Field(None, description="Human-readable meeting title.")
+    meeting_link: Optional[str] = Field(
+        None, description="Original meeting URL used to launch the pipeline."
+    )
+    session_id: Optional[str] = Field(
+        None, description="Optional custom session identifier for tracking."
+    )
     platform: Optional[str] = Field(
         None, description="Source platform (e.g. 'Zoom', 'Google Meet')."
     )
@@ -112,7 +141,8 @@ class Meeting(Document):
 
     # ── Transcript ───────────────────────────────────────────────────────
     transcript: Optional[str] = Field(
-        None, description="Full meeting transcript text (full_text from TranscriptResult)."
+        None,
+        description="Full meeting transcript text (full_text from TranscriptResult).",
     )
 
     # ── Summarisation outputs ────────────────────────────────────────────

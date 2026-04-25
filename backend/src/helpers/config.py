@@ -7,12 +7,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
-    # These will be loaded from .env
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_SERVER: str
-    POSTGRES_PORT: str
-    POSTGRES_DB: str
+    # These will be loaded from .env if using Postgres, optional otherwise
+    POSTGRES_USER: str | None = None
+    POSTGRES_PASSWORD: str | None = None
+    POSTGRES_SERVER: str | None = None
+    POSTGRES_PORT: str | None = None
+    POSTGRES_DB: str | None = None
 
     # Use field name matching the key in .env if provided
     DATABASE_URL: str | None = None

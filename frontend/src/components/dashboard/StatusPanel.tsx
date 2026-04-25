@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../../lib/api';
 import { PipelineStatus } from '../../lib/types';
 
@@ -20,38 +20,50 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Stable ref for the callback so it never triggers useEffect re-runs
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+
+  // Guard against overlapping fetches
+  const isFetchingRef = useRef(false);
+
   useEffect(() => {
     let isMounted = true;
+    let interval: NodeJS.Timeout;
 
     const fetchStatus = async () => {
+      // Skip if a previous fetch is still in flight
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+
       try {
         const data = await api.getStatus(sessionId);
         if (isMounted) {
           setStatus(data);
           if (data.status === 'completed' || data.status === 'failed') {
-            onComplete();
+            clearInterval(interval);
+            onCompleteRef.current();
           }
         }
       } catch (err) {
         console.error(err);
-        if (isMounted) setError('Could not communicate with the pipeline. Please try again.');
+        if (isMounted) {
+          setError('Could not communicate with the pipeline. Please try again.');
+          clearInterval(interval);
+        }
+      } finally {
+        isFetchingRef.current = false;
       }
     };
 
     fetchStatus();
-    const interval = setInterval(() => {
-      if (status?.status !== 'completed' && status?.status !== 'failed' && !error) {
-        fetchStatus();
-      } else {
-        clearInterval(interval);
-      }
-    }, 3000);
+    interval = setInterval(fetchStatus, 3000);
 
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [sessionId, status?.status, error, onComplete]);
+  }, [sessionId]); // onComplete removed — tracked via ref
 
   if (error) {
     return (

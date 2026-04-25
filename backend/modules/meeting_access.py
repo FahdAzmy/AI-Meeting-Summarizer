@@ -156,20 +156,91 @@ class MeetingAccess:
                 logger.info("[Google Meet] Attempt %d/%d – navigating to %s", attempt, self.retry_limit, link)
                 self.driver.get(link)
 
-                wait = WebDriverWait(self.driver, 15)
+                wait = WebDriverWait(self.driver, 20)
 
                 # Dismiss pre-join dialog if present
                 self._safe_click(wait, sel.get("dismiss_dialog", ""), By.CSS_SELECTOR)
+
+                # ── Enter bot name (guest / not-signed-in flow) ──────────
+                # Google Meet uses custom components; try multiple strategies
+                # to find the name input field.
+                name_entered = False
+                name_strategies = [
+                    # Strategy 1: CSS selectors from config
+                    (By.CSS_SELECTOR, sel.get("name_field", "")),
+                    # Strategy 2: XPath by placeholder text
+                    (By.XPATH, "//input[@placeholder='Your name']"),
+                    # Strategy 3: XPath by aria-label
+                    (By.XPATH, "//input[@aria-label='Your name']"),
+                    # Strategy 4: Any visible text input on the page
+                    (By.XPATH, "//input[@type='text']"),
+                    (By.CSS_SELECTOR, "input[type='text']"),
+                ]
+                for by, selector in name_strategies:
+                    if not selector:
+                        continue
+                    try:
+                        name_field = WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((by, selector))
+                        )
+                        name_field.clear()
+                        name_field.send_keys("AI Summarizer")
+                        name_entered = True
+                        logger.info(
+                            "[Google Meet] Entered bot name via %s='%s'.",
+                            by, selector,
+                        )
+                        break
+                    except (TimeoutException, NoSuchElementException):
+                        continue
+
+                if not name_entered:
+                    logger.debug("[Google Meet] No name field found – likely signed in.")
+
+                # Small pause to let the "Ask to join" button become enabled
+                # after the name is entered.
+                time.sleep(1)
 
                 # Mute mic and camera before joining
                 self._safe_click(wait, sel.get("mute_mic", ""), By.CSS_SELECTOR)
                 self._safe_click(wait, sel.get("mute_cam", ""), By.CSS_SELECTOR)
 
-                # Click "Join now"
-                join_btn = wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel.get("join_now_button", "[jsname='V67aGc']")))
-                )
-                join_btn.click()
+                # ── Click join button ────────────────────────────────────
+                # Try multiple strategies: XPath text match is the most
+                # reliable for Google Meet since jsname attrs change often.
+                joined = False
+                join_strategies = [
+                    # Strategy 1: XPath by visible button text
+                    (By.XPATH, "//button[.//span[text()='Ask to join']]"),
+                    (By.XPATH, "//button[contains(., 'Ask to join')]"),
+                    (By.XPATH, "//button[.//span[text()='Join now']]"),
+                    (By.XPATH, "//button[contains(., 'Join now')]"),
+                    # Strategy 2: CSS selectors from config
+                    (By.CSS_SELECTOR, sel.get("ask_to_join_button", "")),
+                    (By.CSS_SELECTOR, sel.get("join_now_button", "")),
+                ]
+                for by, selector in join_strategies:
+                    if not selector:
+                        continue
+                    try:
+                        join_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((by, selector))
+                        )
+                        join_btn.click()
+                        logger.info(
+                            "[Google Meet] Clicked join via %s='%s' on attempt %d.",
+                            by, selector, attempt,
+                        )
+                        joined = True
+                        break
+                    except (TimeoutException, NoSuchElementException):
+                        continue
+
+                if not joined:
+                    raise TimeoutException(
+                        "Neither 'Ask to join' nor 'Join now' button found."
+                    )
+
                 logger.info("[Google Meet] Joined successfully on attempt %d.", attempt)
                 return
 
