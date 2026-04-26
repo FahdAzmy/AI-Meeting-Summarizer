@@ -36,16 +36,16 @@ export function MeetingsTable({ meetings }: MeetingsTableProps) {
   );
 
   return (
-    <div className="bg-white border border-stone-200 rounded-2xl shadow-sm overflow-hidden">
+    <div className="bg-white border border-stone-100 rounded-2xl shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-stone-100">
+            <tr className="border-b border-stone-100 bg-stone-50/50">
               {headers.map(({ key, label }) => (
                 <th
                   key={key}
                   onClick={() => handleSort(key)}
-                  className="px-5 py-3.5 text-left text-[11px] font-bold text-stone-400 uppercase tracking-wider cursor-pointer hover:text-stone-700 select-none transition-colors group"
+                  className="px-5 py-3.5 text-left text-[11px] font-bold text-stone-400 uppercase tracking-wider cursor-pointer hover:text-stone-600 select-none transition-colors group"
                 >
                   <span className="flex items-center gap-1">
                     {label}
@@ -67,9 +67,9 @@ export function MeetingsTable({ meetings }: MeetingsTableProps) {
           </tbody>
         </table>
       </div>
-      {/* Table footer */}
-      <div className="px-5 py-3 border-t border-stone-100 bg-stone-50/60 text-xs text-stone-400 font-medium">
-        {sorted.length} session{sorted.length !== 1 ? 's' : ''}
+      <div className="px-5 py-3 border-t border-stone-100 bg-stone-50/50 text-xs text-stone-400 font-medium flex items-center justify-between">
+        <span>{sorted.length} session{sorted.length !== 1 ? 's' : ''}</span>
+        <span className="text-stone-300">Click row to view details</span>
       </div>
     </div>
   );

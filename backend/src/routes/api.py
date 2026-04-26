@@ -48,7 +48,9 @@ class TriggerRequest(BaseModel):
     """
 
     meeting_link: str = Field(
-        ..., description="URL of the meeting to join.", examples=["https://meet.google.com/abc-defg-hij"]
+        ...,
+        description="URL of the meeting to join.",
+        examples=["https://meet.google.com/abc-defg-hij"],
     )
     emails: List[str] = Field(
         default_factory=list, description="Recipient e-mail addresses for the report."
@@ -65,15 +67,9 @@ class TriggerResponse(BaseModel):
         ..., description="Unique session ID to track the pipeline status."
     )
 
-    message: str = Field(
-        ..., description="Human-readable confirmation message."
-    )
-    meeting_link: str = Field(
-        ..., description="Echo of the submitted meeting link."
-    )
-    storage: str = Field(
-        ..., description="Echo of the selected storage backend."
-    )
+    message: str = Field(..., description="Human-readable confirmation message.")
+    meeting_link: str = Field(..., description="Echo of the submitted meeting link.")
+    storage: str = Field(..., description="Echo of the selected storage backend.")
 
 
 @api_router.post("/trigger", response_model=TriggerResponse, status_code=202)
@@ -148,7 +144,7 @@ def bot_lifecycle_task(session_id: str, link: str):
         "status": "joining",
         "step": 1,
         "total_steps": 6,
-        "message": "Initializing browser and joining meeting..."
+        "message": "Initializing browser and joining meeting...",
     }
 
     bot = None
@@ -162,7 +158,9 @@ def bot_lifecycle_task(session_id: str, link: str):
         # Simulated recording phase
         status_db[session_id]["status"] = "recording"
         status_db[session_id]["step"] = 2
-        status_db[session_id]["message"] = f"Connected to {bot.detected_platform}! Active listening mode..."
+        status_db[session_id]["message"] = (
+            f"Connected to {bot.detected_platform}! Active listening mode..."
+        )
 
         # We simulate waiting for the meeting to end (it'll actually wait on the bot until max time or end)
         # Normally this loops until the meeting ends, but for demo we just sleep
@@ -191,7 +189,9 @@ def bot_lifecycle_task(session_id: str, link: str):
 
 
 @api_router.post("/join", response_model=JoinMeetingResponse)
-async def submit_meeting(request: JoinMeetingRequest, background_tasks: BackgroundTasks):
+async def submit_meeting(
+    request: JoinMeetingRequest, background_tasks: BackgroundTasks
+):
     """
     Accepts a meeting link and starts the background execution.
     """
@@ -199,7 +199,9 @@ async def submit_meeting(request: JoinMeetingRequest, background_tasks: Backgrou
     session_id = f"session_{uuid.uuid4().hex[:8]}"
 
     # Run the bot synchronously in a separate OS thread to avoid locking FastAPI's async event loop
-    thread = threading.Thread(target=bot_lifecycle_task, args=(session_id, request.meeting_link))
+    thread = threading.Thread(
+        target=bot_lifecycle_task, args=(session_id, request.meeting_link)
+    )
     thread.start()
 
     return JoinMeetingResponse(session_id=session_id)
@@ -214,15 +216,26 @@ async def get_status(session_id: str):
     """
     try:
         from src.models.meeting import Meeting
+
         # Attempt to find the meeting in the database
         meeting = await Meeting.find_one(Meeting.session_id == session_id)
         if meeting:
             # Map MeetingStatus to Step
-            status_val = meeting.status.value if hasattr(meeting.status, 'value') else meeting.status
+            status_val = (
+                meeting.status.value
+                if hasattr(meeting.status, "value")
+                else meeting.status
+            )
             status_map = {
-                "pending": 0, "processing": 0, "joining": 1, "recording": 2,
-                "transcribing": 3, "summarising": 4, "delivering": 5,
-                "completed": 6, "failed": 6
+                "pending": 0,
+                "processing": 0,
+                "joining": 1,
+                "recording": 2,
+                "transcribing": 3,
+                "summarising": 4,
+                "delivering": 5,
+                "completed": 6,
+                "failed": 6,
             }
             step = status_map.get(status_val, 0)
             return StatusResponse(
@@ -230,7 +243,7 @@ async def get_status(session_id: str):
                 status=status_val,
                 step=step,
                 total_steps=6,
-                message=f"Pipeline is {status_val}..."
+                message=f"Pipeline is {status_val}...",
             )
     except Exception as e:
         logger.warning(f"Failed to fetch status from DB for {session_id}: {e}")
@@ -243,7 +256,7 @@ async def get_status(session_id: str):
             status=record["status"],
             step=record["step"],
             total_steps=record["total_steps"],
-            message=record["message"]
+            message=record["message"],
         )
 
     # Neither DB nor in-memory has this session yet — the background task
@@ -254,7 +267,7 @@ async def get_status(session_id: str):
         status="pending",
         step=0,
         total_steps=6,
-        message="Pipeline is starting up..."
+        message="Pipeline is starting up...",
     )
 
 
@@ -263,35 +276,51 @@ async def get_status(session_id: str):
 async def mock_history():
     try:
         from src.models.meeting import Meeting
+
         meetings = await Meeting.find_all().to_list()
-        # Return a list of dicts that can be JSON serialized, including the PydanticObjectId as str
         return [
-            {**m.dict(exclude={"id"}), "id": str(m.id)} for m in meetings
+            {
+                **m.dict(exclude={"id"}),
+                "id": str(m.id),
+                "date": m.created_at.isoformat() if m.created_at else None,
+                "platform": m.platform,
+            }
+            for m in meetings
         ]
     except Exception as e:
         logger.error(f"Error fetching meetings: {e}")
         return []
+
 
 @api_router.get("/meetings/{id}")
 async def mock_detail(id: str):
     try:
         from src.models.meeting import Meeting
         from beanie import PydanticObjectId
+
         meeting = await Meeting.get(PydanticObjectId(id))
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
-        return {**meeting.dict(exclude={"id"}), "id": str(meeting.id)}
+        return {
+            **meeting.dict(exclude={"id"}),
+            "id": str(meeting.id),
+            "date": meeting.created_at.isoformat() if meeting.created_at else None,
+            "platform": meeting.platform,
+            "title": meeting.title,
+        }
     except Exception as e:
         logger.error(f"Error fetching meeting details: {e}")
         raise HTTPException(status_code=404, detail="Meeting not found")
+
 
 @api_router.get("/settings")
 async def mock_settings_get():
     return {
         "storage_backend": "database",
         "stt_provider": "whisper",
-        "email_sender": "ai-assistant@company.com"
+        "email_sender": "ai-assistant@company.com",
     }
+
 
 @api_router.post("/settings")
 async def mock_settings_post(data: dict):

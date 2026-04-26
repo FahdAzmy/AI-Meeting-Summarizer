@@ -19,7 +19,7 @@ export interface Meeting {
   id: string;
   session_id: string;
   meeting_link: string;
-  platform: Platform;
+  platform: string;
   date: string;
   duration_minutes: number | null;
   participants: string[];
@@ -29,6 +29,7 @@ export interface Meeting {
   decisions: string[];
   speaker_stats: SpeakerStatsObject | null;
   status: MeetingStatus;
+  title?: string;
 }
 
 export interface PipelineStatus {

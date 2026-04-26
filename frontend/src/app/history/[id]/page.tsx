@@ -150,10 +150,10 @@ export default function MeetingDetail() {
             <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${statusColors[meeting.status] || 'bg-stone-100 text-stone-600 border-stone-200'}`}>
               {meeting.status?.toUpperCase()}
             </span>
-            <span className="text-stone-400 text-sm">{meeting.platform}</span>
+            {meeting.platform && <span className="text-stone-400 text-sm">{meeting.platform}</span>}
           </div>
           <h1 className="font-heading text-3xl sm:text-4xl font-bold text-stone-900 leading-tight mb-4">
-            {meeting.platform} Meeting
+            {meeting.title || 'Meeting'}
           </h1>
           <div className="flex flex-wrap items-center gap-y-2 gap-x-6 text-stone-500 text-sm">
             <div className="flex items-center gap-2">
@@ -177,7 +177,6 @@ export default function MeetingDetail() {
         
         <div className="space-y-6">
           <SummarySection summary={meeting.summary} />
-          <SpeakerStats stats={meeting.speaker_stats} />
           <ActionItemsTable actionItems={meeting.action_items} decisions={meeting.decisions} />
           <TranscriptViewer transcript={meeting.transcript} />
         </div>

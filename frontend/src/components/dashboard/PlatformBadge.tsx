@@ -1,18 +1,25 @@
 import React from 'react';
-import { Platform } from '../../lib/types';
 
 interface PlatformBadgeProps {
-  platform: Platform;
+  platform: string;
 }
 
-const config: Record<Platform, { label: string; classes: string }> = {
-  google_meet: { label: 'Google Meet', classes: 'bg-gray-100 text-gray-700 border-gray-200' },
-  zoom:        { label: 'Zoom',        classes: 'bg-gray-100 text-gray-700 border-gray-200' },
-  teams:       { label: 'MS Teams',   classes: 'bg-gray-100 text-gray-700 border-gray-200' },
+const getPlatformInfo = (platform: string) => {
+  const p = platform?.toLowerCase() || '';
+  if (p.includes('google') || p.includes('meet')) {
+    return { label: 'Google Meet', classes: 'bg-blue-50 text-blue-700 border-blue-200' };
+  }
+  if (p.includes('zoom')) {
+    return { label: 'Zoom', classes: 'bg-blue-50 text-blue-700 border-blue-200' };
+  }
+  if (p.includes('teams') || p.includes('microsoft')) {
+    return { label: 'MS Teams', classes: 'bg-indigo-50 text-indigo-700 border-indigo-200' };
+  }
+  return { label: platform || 'Unknown', classes: 'bg-stone-100 text-stone-600 border-stone-200' };
 };
 
 export function PlatformBadge({ platform }: PlatformBadgeProps) {
-  const { label, classes } = config[platform] ?? { label: platform, classes: 'bg-gray-100 text-gray-700 border-gray-200' };
+  const { label, classes } = getPlatformInfo(platform);
 
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium border ${classes}`}>
