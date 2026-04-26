@@ -260,7 +260,7 @@ async def run_pipeline(
         logger.debug("Stage DELIVERING | id=%s", meeting.id)
 
         # Map the frontend storage value to OutputStorage backend
-        backend_map = {"email": "database", "sheets": "google_sheets", "db": "database"}
+        backend_map = {"email": "database", "db": "database"}
         backend = backend_map.get(storage, "database")
 
         output = OutputStorage(backend=backend)

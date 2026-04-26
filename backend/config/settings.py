@@ -142,22 +142,6 @@ class Config(BaseSettings):
         description="SMTP server port (STARTTLS). Default: 587.",
     )
 
-    # Google Sheets integration – used by OutputStorage._store_to_sheets().
-    GOOGLE_SHEETS_ID: str = Field(
-        default="",
-        description=(
-            "Google Spreadsheet ID (the long string in the Sheets URL). "
-            "Required when backend='google_sheets'."
-        ),
-    )
-    GOOGLE_CREDENTIALS_PATH: str = Field(
-        default="credentials.json",
-        description=(
-            "Absolute or relative path to the Google service-account credentials JSON. "
-            "Defaults to 'credentials.json' in the working directory."
-        ),
-    )
-
     # ------------------------------------------------------------------
     # Pydantic-settings configuration
     # ------------------------------------------------------------------

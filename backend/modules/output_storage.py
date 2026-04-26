@@ -7,17 +7,14 @@ Responsibilities
 ----------------
   1. Persist ``MeetingReport`` + ``TranscriptResult`` data to MongoDB via Beanie.
   2. Dispatch rich-HTML summary emails via aiosmtplib (async SMTP).
-  3. Optionally push tabular data to Google Sheets (gspread), with an automatic
-     Pandas CSV fallback on any API failure.
 
 All public methods are ``async`` to remain non-blocking within the FastAPI
-event loop.  External I/O boundaries (DB, SMTP, Sheets) are isolated behind
+event loop.  External I/O boundaries (DB, SMTP) are isolated behind
 thin calls so that they can be cleanly replaced with ``AsyncMock`` in tests.
 
 Error codes
 -----------
   OS-001  EmailDeliveryError   – global SMTP failure
-  OS-002  SheetsWriteError     – Google Sheets write failure → CSV fallback
   OS-003  DatabaseWriteError   – MongoDB save() failure
   OS-004  InvalidBackendError  – unrecognised backend routing value
 
@@ -40,8 +37,6 @@ from pathlib import Path
 from typing import Any
 
 import aiosmtplib
-import gspread
-import pandas as pd
 from aiosmtplib import SMTPConnectError, SMTPException
 
 from config.settings import Config
@@ -49,7 +44,6 @@ from modules.storage_errors import (
     DatabaseWriteError,
     EmailDeliveryError,
     InvalidBackendError,
-    SheetsWriteError,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,7 +100,7 @@ def _load_partial(name: str) -> str:
 
 
 # Valid routing targets for the store() dispatcher.
-_VALID_BACKENDS: frozenset[str] = frozenset({"database", "google_sheets"})
+_VALID_BACKENDS: frozenset[str] = frozenset({"database"})
 
 
 class OutputStorage:
@@ -116,8 +110,7 @@ class OutputStorage:
     ----------
     backend:
         Routing target for the ``store()`` dispatcher.  Must be one of
-        ``"database"`` (MongoDB, always executed) or ``"google_sheets"``
-        (Sheets push + CSV fallback in addition to DB write).
+        ``"database"`` (MongoDB, always executed).
         Defaults to ``"database"``.
     config:
         Optional pre-built ``Config`` instance.  If omitted a new instance is
@@ -157,10 +150,6 @@ class OutputStorage:
         # MongoDB connection string (used when initialising Beanie externally).
         self.mongo_uri: str = cfg.MONGO_URI
         self.mongo_db: str = cfg.MONGO_DB
-
-        # Google Sheets integration.
-        self.sheets_id: str = cfg.GOOGLE_SHEETS_ID
-        self.credentials_path: str = cfg.GOOGLE_CREDENTIALS_PATH
 
         logger.debug(
             "OutputStorage initialised — backend=%r smtp_host=%r",
@@ -227,114 +216,6 @@ class OutputStorage:
             raise DatabaseWriteError(meeting_id=meeting_id, cause=exc) from exc
 
         logger.info("[OS] Meeting %r saved successfully (status=COMPLETED).", meeting_id)
-
-    async def _store_to_sheets(
-        self,
-        meeting: Any,
-        report: dict[str, Any],
-    ) -> None:
-        """Push a tabular summary row to the configured Google Sheets spreadsheet.
-
-        Appends a single row containing the key meeting metrics using the
-        ``gspread`` service-account client.  On any ``gspread`` / network
-        failure the method transparently falls back to writing a local Pandas
-        CSV file (OS-002 / T017) rather than propagating the exception.
-
-        Row schema (T016)
-        -----------------
-        Date | Participants | Summary | Decisions | Action Items | Duration (min)
-
-        CSV Fallback (T017)
-        -------------------
-        Written to ``./exports/meeting_<id>_<timestamp>.csv`` on
-        ``SheetsWriteError``.
-
-        Parameters
-        ----------
-        meeting:
-            Beanie ``Meeting`` document with ``id`` and ``duration_minutes``.
-        report:
-            ``MeetingReport`` dict produced by ``Summarisation.generate_report()``.
-        """
-        # ── Build the row payload ────────────────────────────────────────
-        meeting_id: str = str(getattr(meeting, "id", "unknown"))
-        date_str: str = datetime.utcnow().strftime("%Y-%m-%d")
-        speakers: list = (
-            report.get("speaker_stats", {}).get("speakers", [])
-            if report.get("speaker_stats")
-            else []
-        )
-        participants: str = ", ".join(s.get("speaker", "") for s in speakers) or "N/A"
-        summary: str = report.get("summary", "")
-        decisions: str = " | ".join(report.get("decisions", []))
-        action_items_str: str = " | ".join(
-            f"{a.get('assignee', '?')}: {a.get('task', '?')}"
-            for a in report.get("action_items", [])
-        )
-        duration_min: int = getattr(meeting, "duration_minutes", 0)
-
-        row: list[Any] = [
-            date_str,
-            participants,
-            summary,
-            decisions,
-            action_items_str,
-            duration_min,
-        ]
-
-        # ── Attempt Sheets append ────────────────────────────────────────
-        try:
-            gc = gspread.service_account(filename=self.credentials_path)
-            spreadsheet = gc.open_by_key(self.sheets_id)
-            spreadsheet.sheet1.append_row(row)
-            logger.info(
-                "[OS] Row appended to Sheets for meeting %r (sheet_id=%r).",
-                meeting_id,
-                self.sheets_id,
-            )
-
-        except Exception as exc:
-            # T017 — Any gspread / network / API exception activates the local
-            # CSV fallback.  SheetsWriteError is a subclass of Exception so it
-            # is captured here too; the failure is logged and the CSV path
-            # ensures data is never silently lost.
-            logger.warning(
-                "[OS] Sheets write failed for meeting %r — falling back to CSV. Cause: %s",
-                meeting_id,
-                exc,
-            )
-            self._write_csv_fallback(meeting_id, row)
-
-
-    def _write_csv_fallback(
-        self,
-        meeting_id: str,
-        row: list[Any],
-    ) -> None:
-        """Write a single-row DataFrame to a local CSV file as a Sheets fallback.
-
-        The file is saved to ``./exports/meeting_<id>_<timestamp>.csv``.
-        The directory is created automatically if it does not exist.
-        """
-        export_dir = Path("exports")
-        export_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        csv_path = export_dir / f"meeting_{meeting_id}_{timestamp}.csv"
-
-        df = pd.DataFrame(
-            [row],
-            columns=[
-                "Date",
-                "Participants",
-                "Summary",
-                "Decisions",
-                "Action Items",
-                "Duration (min)",
-            ],
-        )
-        df.to_csv(csv_path, index=False)
-        logger.info("[OS] CSV fallback written to %s", csv_path)
-
 
     async def _format_email_body(self, report: dict[str, Any]) -> str:
         """Render ``MeetingReport`` data as a styled HTML email body string.
@@ -532,10 +413,6 @@ class OutputStorage:
         Execution order (T018)
         ----------------------
         1. **Always**: ``_store_to_database()`` — MongoDB is the primary store.
-           If this fails the error propagates immediately; Sheets is never called.
-        2. **If backend == 'google_sheets'**: ``_store_to_sheets()`` — secondary
-           enterprise export.  Failures here activate the CSV fallback internally
-           and do NOT abort the overall ``store()`` call.
 
         Telemetry (T019)
         ----------------
@@ -567,10 +444,6 @@ class OutputStorage:
 
         # ── Step 1: MongoDB (always, hard failure) ─────────────────────
         await self._store_to_database(meeting, report, transcript)
-
-        # ── Step 2: Google Sheets (conditional, soft failure via fallback)
-        if self.backend == "google_sheets":
-            await self._store_to_sheets(meeting, report)
 
         elapsed_ms: float = (time.monotonic() - t_start) * 1000
         logger.info(

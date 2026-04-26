@@ -38,7 +38,6 @@ from modules.storage_errors import (
     DatabaseWriteError,
     EmailDeliveryError,
     InvalidBackendError,
-    SheetsWriteError,
 )
 
 
@@ -119,11 +118,6 @@ class TestOutputStorageScaffold:
         storage = OutputStorage(backend="database", config=_make_stub_config())
         assert storage.backend == "database"
 
-    def test_instantiates_with_google_sheets_backend(self) -> None:
-        """Valid ``backend='google_sheets'`` must not raise."""
-        storage = OutputStorage(backend="google_sheets", config=_make_stub_config())
-        assert storage.backend == "google_sheets"
-
     def test_invalid_backend_raises_os004(self) -> None:
         """An unrecognised backend string must raise InvalidBackendError (OS-004)."""
         with pytest.raises(InvalidBackendError) as exc_info:
@@ -172,18 +166,6 @@ class TestOutputStorageScaffold:
         import inspect
         storage = OutputStorage(config=_make_stub_config())
         assert inspect.iscoroutinefunction(storage._store_to_database)
-
-    async def test_store_to_sheets_is_async(self) -> None:
-        """``_store_to_sheets`` must be awaitable."""
-        import inspect
-        storage = OutputStorage(config=_make_stub_config())
-        assert inspect.iscoroutinefunction(storage._store_to_sheets)
-
-    async def test_send_email_is_async(self) -> None:
-        """``send_email`` must be awaitable."""
-        import inspect
-        storage = OutputStorage(config=_make_stub_config())
-        assert inspect.iscoroutinefunction(storage.send_email)
 
     async def test_store_is_async(self) -> None:
         """``store`` must be awaitable."""
@@ -421,101 +403,11 @@ class TestSendEmailUS2:
 
 
 # ---------------------------------------------------------------------------
-# T014 / T015 — Phase 5: _store_to_sheets() (User Story 3 & 4)
-# ---------------------------------------------------------------------------
-
-# Expected column names the Sheets row must contain (FR-004 / SC-003).
-_EXPECTED_SHEET_COLUMNS = {"Date", "Participants", "Summary", "Decisions", "Action Items", "Duration (min)"}
-
-
-class TestStoreToSheetsUS3US4:
-    """T014: _store_to_sheets() must append a row with all required CSV columns.
-    T015: A SheetsWriteError must trigger a pandas to_csv() fallback on disk.
-    """
-
-    async def test_t014_gspread_append_called_with_all_columns(self) -> None:
-        """T014: The row appended to gspread must contain every expected column."""
-        storage = OutputStorage(config=_make_stub_config())
-        meeting = _make_mock_meeting()
-
-        mock_worksheet = MagicMock()
-        mock_spreadsheet = MagicMock()
-        mock_spreadsheet.sheet1 = mock_worksheet
-
-        with patch("modules.output_storage.gspread") as mock_gspread:
-            mock_gspread.service_account.return_value.open_by_key.return_value = mock_spreadsheet
-            await storage._store_to_sheets(meeting, MOCK_REPORT)
-
-        mock_worksheet.append_row.assert_called_once()
-        appended_row: list = mock_worksheet.append_row.call_args[0][0]
-        # Row must have at least as many cells as expected columns.
-        assert len(appended_row) >= len(_EXPECTED_SHEET_COLUMNS)
-
-    async def test_t014_appended_row_contains_summary(self) -> None:
-        """T014: The appended Sheets row must include the report summary text."""
-        storage = OutputStorage(config=_make_stub_config())
-        meeting = _make_mock_meeting()
-
-        mock_worksheet = MagicMock()
-        mock_spreadsheet = MagicMock()
-        mock_spreadsheet.sheet1 = mock_worksheet
-
-        with patch("modules.output_storage.gspread") as mock_gspread:
-            mock_gspread.service_account.return_value.open_by_key.return_value = mock_spreadsheet
-            await storage._store_to_sheets(meeting, MOCK_REPORT)
-
-        appended_row: list = mock_worksheet.append_row.call_args[0][0]
-        combined = " ".join(str(v) for v in appended_row)
-        assert MOCK_REPORT["summary"] in combined
-
-    async def test_t015_sheets_write_error_triggers_csv_fallback(self) -> None:
-        """T015: SheetsWriteError must activate the pandas .to_csv() fallback."""
-        storage = OutputStorage(config=_make_stub_config())
-        meeting = _make_mock_meeting()
-
-        with (
-            patch("modules.output_storage.gspread") as mock_gspread,
-            patch("modules.output_storage.pd") as mock_pd,
-        ):
-            # Force gspread to raise SheetsWriteError.
-            mock_gspread.service_account.return_value.open_by_key.side_effect = (
-                SheetsWriteError("test-sheet-id", Exception("API down"))
-            )
-            mock_df = MagicMock()
-            mock_pd.DataFrame.return_value = mock_df
-
-            await storage._store_to_sheets(meeting, MOCK_REPORT)
-
-        # Fallback must have called pandas to_csv().
-        mock_df.to_csv.assert_called_once()
-        csv_path: str = str(mock_df.to_csv.call_args[0][0])
-        assert csv_path.endswith(".csv")
-
-    async def test_t015_csv_fallback_does_not_raise(self) -> None:
-        """T015: A SheetsWriteError must be swallowed — fallback must not re-raise."""
-        storage = OutputStorage(config=_make_stub_config())
-        meeting = _make_mock_meeting()
-
-        with (
-            patch("modules.output_storage.gspread") as mock_gspread,
-            patch("modules.output_storage.pd") as mock_pd,
-        ):
-            mock_gspread.service_account.return_value.open_by_key.side_effect = (
-                SheetsWriteError("sheet", Exception("timeout"))
-            )
-            mock_pd.DataFrame.return_value = MagicMock()
-
-            # Must complete without raising.
-            await storage._store_to_sheets(meeting, MOCK_REPORT)
-
-
-# ---------------------------------------------------------------------------
-# T018 — Phase 6: store() orchestrator (User Story 1 + 3)
+# T018 — Phase 6: store() orchestrator (User Story 1)
 # ---------------------------------------------------------------------------
 
 class TestStoreOrchestratorUS1US3:
-    """T018: store() must always call _store_to_database() and call
-    _store_to_sheets() only when backend == 'google_sheets'.
+    """T018: store() must always call _store_to_database().
     T019 (logging) is verified indirectly — store() logs at INFO level.
     """
 
@@ -523,23 +415,10 @@ class TestStoreOrchestratorUS1US3:
         """T018: store() must call _store_to_database() for any backend."""
         storage = OutputStorage(backend="database", config=_make_stub_config())
         storage._store_to_database = AsyncMock()  # type: ignore[method-assign]
-        storage._store_to_sheets = AsyncMock()    # type: ignore[method-assign]
 
         await storage.store(_make_mock_meeting(), MOCK_REPORT, MOCK_TRANSCRIPT)
 
         storage._store_to_database.assert_awaited_once()
-        storage._store_to_sheets.assert_not_awaited()
-
-    async def test_t018_store_calls_sheets_when_backend_is_google_sheets(self) -> None:
-        """T018: store() must call _store_to_sheets() when backend='google_sheets'."""
-        storage = OutputStorage(backend="google_sheets", config=_make_stub_config())
-        storage._store_to_database = AsyncMock()  # type: ignore[method-assign]
-        storage._store_to_sheets = AsyncMock()    # type: ignore[method-assign]
-
-        await storage.store(_make_mock_meeting(), MOCK_REPORT, MOCK_TRANSCRIPT)
-
-        storage._store_to_database.assert_awaited_once()
-        storage._store_to_sheets.assert_awaited_once()
 
     async def test_t018_store_database_failure_propagates(self) -> None:
         """T018: A DatabaseWriteError from _store_to_database() must propagate."""
@@ -547,20 +426,6 @@ class TestStoreOrchestratorUS1US3:
         storage._store_to_database = AsyncMock(  # type: ignore[method-assign]
             side_effect=DatabaseWriteError("mtg-1", Exception("boom"))
         )
-        storage._store_to_sheets = AsyncMock()  # type: ignore[method-assign]
 
         with pytest.raises(DatabaseWriteError):
             await storage.store(_make_mock_meeting(), MOCK_REPORT, MOCK_TRANSCRIPT)
-
-    async def test_t018_store_sheets_not_called_on_database_failure(self) -> None:
-        """T018: _store_to_sheets() must NOT be called if the DB write fails."""
-        storage = OutputStorage(backend="google_sheets", config=_make_stub_config())
-        storage._store_to_database = AsyncMock(  # type: ignore[method-assign]
-            side_effect=DatabaseWriteError("mtg-2", Exception("db down"))
-        )
-        storage._store_to_sheets = AsyncMock()  # type: ignore[method-assign]
-
-        with pytest.raises(DatabaseWriteError):
-            await storage.store(_make_mock_meeting(), MOCK_REPORT, MOCK_TRANSCRIPT)
-
-        storage._store_to_sheets.assert_not_awaited()

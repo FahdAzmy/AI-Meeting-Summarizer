@@ -45,5 +45,56 @@ export const api = {
     });
     if (!res.ok) throw new Error('Failed to update settings');
     return res.json();
+  },
+
+  async exportAllMeetingsExcel(): Promise<void> {
+    const res = await fetch(`${API_BASE}/export/meetings/excel`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+      throw new Error(err.detail || 'Failed to export meetings');
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'meetings.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  async exportMeetingExcel(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/export/meetings/${id}/excel`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+      throw new Error(err.detail || 'Failed to export meeting');
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'meeting.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  },
+
+  async exportMeetingPdf(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/export/meetings/${id}/pdf`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Export failed' }));
+      throw new Error(err.detail || 'Failed to export meeting');
+    }
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'meeting.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
   }
 };

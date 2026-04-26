@@ -39,7 +39,7 @@ export interface PipelineStatus {
   message: string;
 }
 
-export type StorageBackend = 'database' | 'google_sheets';
+export type StorageBackend = 'database';
 export type STTProvider = 'whisper' | 'deepgram' | 'assemblyai';
 
 export interface Settings {
