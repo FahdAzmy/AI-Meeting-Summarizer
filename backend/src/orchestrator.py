@@ -269,7 +269,9 @@ async def run_pipeline(
             access = MeetingAccess()
             await asyncio.to_thread(access.join, meeting_link)
 
-        # ── Stage 2: Record audio ───────────────────────────────────────────
+        # ── Stage 2: Start recording (right after clicking "Join now") ─────
+        # join() returns immediately after clicking "Join now".
+        # OBS starts recording here so we capture audio from this point.
         meeting.status = MeetingStatus.RECORDING
         await meeting.save()
         logger.debug("Stage RECORDING | id=%s", meeting.id)
@@ -277,9 +279,24 @@ async def run_pipeline(
         capture = AudioCapture()
         await asyncio.to_thread(capture.start)
 
-        # Wait for the meeting to end, then stop recording
+        # Wait for lobby admission (if any) + meeting to end
+
         await asyncio.to_thread(access.wait_until_end)
-        raw_recording: str = await asyncio.to_thread(capture.stop)
+
+        # Stop OBS recording — handle errors gracefully
+        try:
+            raw_recording: str = await asyncio.to_thread(capture.stop)
+        except Exception as stop_exc:
+            logger.warning(
+                "OBS stop failed (%s) — attempting to find latest recording.",
+                stop_exc,
+            )
+            # Try to find an existing recording file as fallback
+            raw_recording = await asyncio.to_thread(
+                capture._find_latest_recording
+            )
+            if not raw_recording:
+                raise  # re-raise original error if no file found
 
         # Leave the meeting room and release browser resources
         await asyncio.to_thread(access.leave)

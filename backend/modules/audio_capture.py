@@ -112,9 +112,7 @@ class AudioCapture:
         logger.debug("Performing OBS healthcheck…")
         try:
             version_info = self.client.get_version()
-            logger.info(
-                "OBS healthcheck passed – OBS version: %s", version_info
-            )
+            logger.info("OBS healthcheck passed – OBS version: %s", version_info)
             return True
         except Exception as exc:
             logger.error("OBS healthcheck failed – %r", exc)
@@ -179,8 +177,16 @@ class AudioCapture:
             output_path: str = (
                 getattr(response, "output_path", None)
                 or getattr(response, "outputPath", None)
-                or (vars(response).get("output_path") if hasattr(response, "__dict__") else None)
-                or (vars(response).get("outputPath") if hasattr(response, "__dict__") else None)
+                or (
+                    vars(response).get("output_path")
+                    if hasattr(response, "__dict__")
+                    else None
+                )
+                or (
+                    vars(response).get("outputPath")
+                    if hasattr(response, "__dict__")
+                    else None
+                )
             )
             logger.debug(
                 "OBS stop_record() response type: %s, attrs: %s",

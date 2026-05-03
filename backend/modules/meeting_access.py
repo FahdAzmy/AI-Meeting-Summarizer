@@ -39,7 +39,7 @@ _PLATFORM_PATTERNS: dict[str, re.Pattern] = {
     ),
     "zoom": re.compile(r"https?://(?:[a-z0-9-]+\.)?zoom\.us/j/\d+", re.IGNORECASE),
     "teams": re.compile(
-        r"https?://teams\.microsoft\.com/l/meetup-join/[^\s]+",
+        r"https?://(?:teams\.microsoft\.com/l/meetup-join/[^\s]+|teams\.live\.com/meet/[^\s]+)",
         re.IGNORECASE,
     ),
     "zoom_sdk": re.compile(r"https?://localhost:\d+/zoom-meeting.*", re.IGNORECASE),
@@ -136,46 +136,132 @@ class MeetingAccess:
         platform_sel = self.selectors.get(self.detected_platform, {})
         end_xpath = platform_sel.get("end_text", "")
 
+        # ── Teams: Wait for lobby admission first ─────────────────────────
+        # After clicking "Join now", Teams may put the bot in a waiting room.
+        # We wait here (up to 5 min) for the host to admit the bot before
+        # starting the main meeting-end polling loop.
+        if self.detected_platform == "teams":
+            _LOBBY_PHRASES = [
+                "someone will let you in",
+                "waiting to be let in",
+                "waiting to be admitted",
+                "let you in shortly",
+                "please wait",
+            ]
+            _LOBBY_END_PHRASES = [
+                "the meeting has ended",
+                "you have left the meeting",
+                "meeting has been cancelled",
+                "enjoy your call?",
+            ]
+            lobby_timeout = 300
+            lobby_start = time.time()
+            in_lobby = False
+
+            # Brief pause to let the page transition after clicking Join
+            time.sleep(3)
+
+            while time.time() - lobby_start < lobby_timeout:
+                try:
+                    page_src = self.driver.page_source.lower()
+                except Exception:
+                    break
+
+                # Check if meeting ended while in lobby
+                if any(p in page_src for p in _LOBBY_END_PHRASES):
+                    logger.warning("[Teams] Meeting ended while in lobby.")
+                    return  # exit — meeting is over
+
+                # Check if still in lobby
+                if any(p in page_src for p in _LOBBY_PHRASES):
+                    if not in_lobby:
+                        in_lobby = True
+                        logger.info(
+                            "[Teams] Bot is in lobby. Waiting for admission "
+                            "(timeout=%ds)…", lobby_timeout,
+                        )
+                    logger.debug(
+                        "[Teams] Still in lobby… (%ds / %ds)",
+                        int(time.time() - lobby_start), lobby_timeout,
+                    )
+                    time.sleep(5)
+                else:
+                    if in_lobby:
+                        logger.info(
+                            "[Teams] Admitted from lobby after %ds.",
+                            int(time.time() - lobby_start),
+                        )
+                    else:
+                        logger.info("[Teams] No lobby — joined directly.")
+                    break
+            else:
+                logger.error(
+                    "[Teams] Lobby timeout (%ds) — host never admitted.",
+                    lobby_timeout,
+                )
+                return  # exit — give up waiting
+
         alone_since: float | None = None  # timestamp when we first detected alone
         poll_count = 0
+        meeting_start = time.time()
+        # Minimum time (seconds) to stay in the meeting before allowing
+        # "alone" detection to trigger an exit.  This prevents the bot from
+        # leaving immediately after joining when it's the first participant.
+        MIN_MEETING_DURATION = 30
 
         while True:
             poll_count += 1
+            elapsed_in_meeting = int(time.time() - meeting_start)
             logger.info(
-                "Poll #%d | Checking meeting status (platform=%s)…",
+                "Poll #%d | Checking meeting status (platform=%s) | in-meeting %ds…",
                 poll_count,
                 self.detected_platform,
+                elapsed_in_meeting,
             )
 
-            # ── Check 1: Host ended the meeting (instant) ────────────────
+            # ── Check 1: Host ended the meeting (hard signal) ─────────────
+            # This is always checked — if the host explicitly ends the
+            # meeting, we leave immediately regardless of duration.
             if self._meeting_has_ended(end_xpath):
-                logger.info("Meeting end detected (end screen). Exiting wait loop.")
+                logger.info(
+                    "Meeting end detected (end screen) after %ds. Exiting wait loop.",
+                    elapsed_in_meeting,
+                )
                 return
 
             # ── Check 2: Agent is alone in the meeting ───────────────────
-            is_alone = self._is_alone_in_meeting(platform_sel)
-            logger.info("Poll #%d | is_alone=%s", poll_count, is_alone)
-
-            if is_alone:
-                if alone_since is None:
-                    alone_since = time.time()
-                    logger.info(
-                        "Alone in meeting detected — starting %ds grace period.",
-                        alone_grace_period,
-                    )
-                elapsed = time.time() - alone_since
-                if elapsed >= alone_grace_period:
-                    logger.info(
-                        "Alone for %.0fs (grace=%ds). Meeting is over.",
-                        elapsed,
-                        alone_grace_period,
-                    )
-                    return
+            # Skip this check during the warm-up period to avoid false
+            # positives (e.g. bot is first to join, "Waiting for others").
+            if elapsed_in_meeting < MIN_MEETING_DURATION:
+                logger.debug(
+                    "Warm-up period (%ds/%ds) — skipping alone check.",
+                    elapsed_in_meeting,
+                    MIN_MEETING_DURATION,
+                )
             else:
-                # Someone re-joined — reset the grace timer
-                if alone_since is not None:
-                    logger.info("Participant re-joined — resetting alone timer.")
-                    alone_since = None
+                is_alone = self._is_alone_in_meeting(platform_sel)
+                logger.info("Poll #%d | is_alone=%s", poll_count, is_alone)
+
+                if is_alone:
+                    if alone_since is None:
+                        alone_since = time.time()
+                        logger.info(
+                            "Alone in meeting detected — starting %ds grace period.",
+                            alone_grace_period,
+                        )
+                    elapsed = time.time() - alone_since
+                    if elapsed >= alone_grace_period:
+                        logger.info(
+                            "Alone for %.0fs (grace=%ds). Meeting is over.",
+                            elapsed,
+                            alone_grace_period,
+                        )
+                        return
+                else:
+                    # Someone re-joined — reset the grace timer
+                    if alone_since is not None:
+                        logger.info("Participant re-joined — resetting alone timer.")
+                        alone_since = None
 
             time.sleep(poll_interval)
 
@@ -240,6 +326,39 @@ class MeetingAccess:
         if headless:
             options.add_argument("--headless=new")
         return options
+
+    @staticmethod
+    def _teams_web_url(link: str) -> str:
+        """Rewrite a ``teams.live.com/meet/`` short link to the v2 web deep-link
+        that opens the pre-join page directly in the browser without the
+        "Open Teams app?" native-app redirect.
+
+        Example::
+            https://teams.live.com/meet/9362297015184?p=y7BwyN5fArqTg1vBql
+            → https://teams.live.com/v2/#/meet/9362297015184?p=y7BwyN5fArqTg1vBql&anon=true&launchType=web
+
+        For ``teams.microsoft.com`` URLs the link is returned unchanged.
+        """
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(link)
+        if "teams.live.com" not in parsed.netloc:
+            return link  # enterprise URLs use the old flow
+
+        # Extract meeting ID from /meet/<ID>
+        m = re.match(r"/meet/([^/?#]+)", parsed.path)
+        if not m:
+            logger.warning("[Teams] Could not parse meeting ID from: %s", link)
+            return link
+
+        meeting_id = m.group(1)
+        # Preserve the original query string (e.g. p=...) and append web params
+        qs = parsed.query  # e.g. "p=y7BwyN5fArqTg1vBql"
+        extra = "anon=true&launchType=web"
+        full_qs = f"{qs}&{extra}" if qs else extra
+        web_url = f"https://teams.live.com/v2/#/meet/{meeting_id}?{full_qs}"
+        logger.info("[Teams] Rewrote URL to web deep-link: %s", web_url)
+        return web_url
 
     @staticmethod
     def _zoom_web_client_url(link: str) -> str:
@@ -472,13 +591,15 @@ class MeetingAccess:
                         continue
 
                 if not joined:
-                    self.driver.execute_script("""
+                    self.driver.execute_script(
+                        """
                         var btns = document.querySelectorAll('button');
                         for (var i = 0; i < btns.length; i++) {
                             var t = (btns[i].innerText || btns[i].textContent || '').trim();
                             if (t === 'Join') { btns[i].click(); break; }
                         }
-                    """)
+                    """
+                    )
                     logger.info("[Zoom] Clicked Join via JS fallback.")
 
                 # Detect and handle waiting room
@@ -525,55 +646,331 @@ class MeetingAccess:
     # ──────────────────────────────────────────────────────────
 
     def _join_teams(self, link: str) -> None:
+        """Join an MS Teams meeting.
+
+        Supports both:
+        * ``teams.live.com/meet/<ID>`` — personal/consumer meetings.
+          Rewrites to ``/v2/#/meet/`` deep-link (pre-join page, no app redirect).
+        * ``teams.microsoft.com/l/meetup-join/…`` — enterprise/work meetings.
+          Uses the old selector-driven flow ("Continue on this browser").
+
+        Live URL pre-join sequence (matching the UI in the screenshot):
+        1. Navigate to rewritten URL.
+        2. Wait 5 s for the SPA to render.
+        3. Select "Don't use audio".
+        4. Turn camera OFF.
+        5. Enter bot name "AI Summarizer".
+        6. Click "Join now".
+        """
         sel = self.selectors.get("teams", {})
+        BOT_NAME = "AI Summarizer"
+        is_live_url = "teams.live.com" in link
+
         for attempt in range(1, self.retry_limit + 1):
             self.current_attempt = attempt
             try:
+                nav_link = self._teams_web_url(link)
                 logger.info(
                     "[Teams] Attempt %d/%d – navigating to %s",
                     attempt,
                     self.retry_limit,
-                    link,
+                    nav_link,
                 )
-                self.driver.get(link)
+                self.driver.get(nav_link)
 
-                wait = WebDriverWait(self.driver, 15)
+                wait = WebDriverWait(self.driver, 25)
 
-                # Bypass "Open app" prompt – choose "Continue on this browser"
-                use_browser = wait.until(
-                    EC.element_to_be_clickable(
-                        (
-                            By.CSS_SELECTOR,
-                            sel.get("use_browser_link", "a[data-tid='joinOnWeb']"),
+                if is_live_url:
+                    # ── 1. Wait for SPA pre-join page to render ──────────────
+                    logger.info("[Teams] Waiting 20 s for pre-join SPA to render…")
+                    time.sleep(20)
+
+                    # ── 2. Keep "Computer audio" and mute microphone ─────────
+                    # "Computer audio" is selected by default. We ensure it's
+                    # active (so OBS can capture meeting audio), then turn OFF
+                    # the microphone toggle so the bot doesn't transmit noise.
+
+                    # 2a. Ensure "Computer audio" radio is selected (safety click)
+                    try:
+                        self.driver.execute_script(
+                            """
+                            var radios = document.querySelectorAll('input[type="radio"]');
+                            for (var i = 0; i < radios.length; i++) {
+                                var p = radios[i].closest('label') || radios[i].parentElement;
+                                var txt = p ? (p.textContent || '').toLowerCase() : '';
+                                if (txt.indexOf('computer audio') !== -1) {
+                                    if (!radios[i].checked) { radios[i].click(); }
+                                    return;
+                                }
+                            }
+                        """
+                        )
+                        logger.info("[Teams] Ensured 'Computer audio' is selected.")
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[Teams] Computer audio selection failed: %s", exc)
+
+                    time.sleep(0.5)
+
+                    # 2b. Turn OFF the microphone toggle switch
+                    mic_muted = False
+                    for by, sel_str in [
+                        (By.CSS_SELECTOR, "[data-tid='toggle-mute']"),
+                        (By.CSS_SELECTOR, "[data-tid='prejoin-audio-mute']"),
+                        (By.CSS_SELECTOR, "[aria-label*='microphone' i][role='switch']"),
+                        (By.CSS_SELECTOR, "[aria-label*='microphone' i][role='checkbox']"),
+                        (By.CSS_SELECTOR, "[aria-label*='mic' i][role='switch']"),
+                        (By.CSS_SELECTOR, "[aria-label*='mic' i][role='checkbox']"),
+                        (By.CSS_SELECTOR, "[aria-label*='mute' i][role='switch']"),
+                        (By.CSS_SELECTOR, "[aria-label*='mute' i][role='checkbox']"),
+                    ]:
+                        try:
+                            el = WebDriverWait(self.driver, 2).until(
+                                EC.presence_of_element_located((by, sel_str))
+                            )
+                            # If the toggle is ON (checked/true), click to turn OFF
+                            is_on = (
+                                el.get_attribute("aria-checked") == "true"
+                                or el.get_attribute("checked") == "true"
+                            )
+                            if is_on:
+                                el.click()
+                                logger.info("[Teams] Muted microphone via %s", sel_str)
+                            else:
+                                logger.info("[Teams] Microphone already muted (%s)", sel_str)
+                            mic_muted = True
+                            break
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+
+                    if not mic_muted:
+                        # JS fallback: find the mic toggle by scanning switches
+                        try:
+                            self.driver.execute_script(
+                                """
+                                // Look for toggle switches related to microphone
+                                var toggles = document.querySelectorAll(
+                                    '[role="switch"], [role="checkbox"], input[type="checkbox"]'
+                                );
+                                for (var i = 0; i < toggles.length; i++) {
+                                    var el = toggles[i];
+                                    var label = (el.getAttribute('aria-label') || '').toLowerCase();
+                                    var tid = (el.getAttribute('data-tid') || '').toLowerCase();
+                                    if (label.indexOf('mic') !== -1 || label.indexOf('mute') !== -1 ||
+                                        tid.indexOf('mic') !== -1 || tid.indexOf('mute') !== -1) {
+                                        if (el.checked || el.getAttribute('aria-checked') === 'true') {
+                                            el.click();
+                                        }
+                                        return;
+                                    }
+                                }
+                            """
+                            )
+                            logger.info("[Teams] Mic toggle clicked (JS fallback).")
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[Teams] JS mic toggle failed: %s", exc)
+                    time.sleep(1)
+
+                    # ── 3. Turn camera OFF ────────────────────────────────────
+                    camera_toggled = False
+                    for by, sel_str in [
+                        (By.CSS_SELECTOR, "[data-tid='toggle-video']"),
+                        (By.CSS_SELECTOR, "[data-tid='prejoin-video-toggle']"),
+                        (By.CSS_SELECTOR, "[aria-label*='camera' i][role='switch']"),
+                        (By.CSS_SELECTOR, "[aria-label*='camera' i][role='checkbox']"),
+                        (By.CSS_SELECTOR, "[aria-label*='video' i][role='switch']"),
+                        (By.CSS_SELECTOR, "[aria-label*='video' i][role='checkbox']"),
+                    ]:
+                        try:
+                            el = WebDriverWait(self.driver, 1).until(
+                                EC.presence_of_element_located((by, sel_str))
+                            )
+                            is_checked = (
+                                el.get_attribute("aria-checked") == "true"
+                                or el.get_attribute("checked") == "true"
+                            )
+                            if is_checked:
+                                el.click()
+                                logger.info("[Teams] Turned camera OFF via %s", sel_str)
+                            else:
+                                logger.info("[Teams] Camera already OFF (%s)", sel_str)
+                            camera_toggled = True
+                            break
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+
+                    if not camera_toggled:
+                        try:
+                            self.driver.execute_script(
+                                """
+                                var toggles = document.querySelectorAll('input[type="checkbox"], [role="switch"], [role="checkbox"]');
+                                for (var j = 0; j < toggles.length; j++) {
+                                    var el = toggles[j];
+                                    var tl = (el.getAttribute('aria-label') || '').toLowerCase();
+                                    var id = (el.id || '').toLowerCase();
+                                    var dataTid = (el.getAttribute('data-tid') || '').toLowerCase();
+                                    
+                                    if (tl.indexOf('camera') !== -1 || tl.indexOf('video') !== -1 ||
+                                        id.indexOf('camera') !== -1 || id.indexOf('video') !== -1 ||
+                                        dataTid.indexOf('camera') !== -1 || dataTid.indexOf('video') !== -1) {
+                                        
+                                        if (el.checked || el.getAttribute('aria-checked') === 'true') {
+                                            el.click();
+                                        }
+                                        return;
+                                    }
+                                }
+                                // If we couldn't find a label, the first toggle on the page is usually the camera.
+                                // We click it if it's currently ON.
+                                if (toggles.length > 0) {
+                                    var firstToggle = toggles[0];
+                                    if (firstToggle.checked || firstToggle.getAttribute('aria-checked') === 'true') {
+                                        firstToggle.click();
+                                    }
+                                }
+                            """
+                            )
+                            logger.info("[Teams] Camera toggle clicked (JS fallback).")
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[Teams] Camera toggle JS failed: %s", exc)
+                    time.sleep(1)
+
+                    # ── 4. Enter bot name ────────────────────────────────────
+                    name_entered = False
+                    for by, sel_str in [
+                        (By.XPATH, "//input[@placeholder='Type your name']"),
+                        (By.XPATH, "//input[contains(@placeholder,'name')]"),
+                        (By.CSS_SELECTOR, "input[placeholder*='name']"),
+                        (By.CSS_SELECTOR, "input[type='text']"),
+                        (By.CSS_SELECTOR, sel.get("name_field", "")),
+                    ]:
+                        if not sel_str:
+                            continue
+                        try:
+                            field = WebDriverWait(self.driver, 5).until(
+                                EC.presence_of_element_located((by, sel_str))
+                            )
+                            field.clear()
+                            field.send_keys(BOT_NAME)
+                            name_entered = True
+                            logger.info(
+                                "[Teams] Entered name '%s' via %s='%s'.",
+                                BOT_NAME,
+                                by,
+                                sel_str,
+                            )
+                            break
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+
+                    if not name_entered:
+                        # React-native-setter JS fallback
+                        try:
+                            self.driver.execute_script(
+                                """
+                                var name = arguments[0];
+                                var inputs = document.querySelectorAll(
+                                    'input[type="text"], input:not([type])');
+                                for (var i = 0; i < inputs.length; i++) {
+                                    if (inputs[i].offsetParent !== null) {
+                                        var setter = Object.getOwnPropertyDescriptor(
+                                            window.HTMLInputElement.prototype, 'value').set;
+                                        setter.call(inputs[i], name);
+                                        inputs[i].dispatchEvent(
+                                            new Event('input',  { bubbles: true }));
+                                        inputs[i].dispatchEvent(
+                                            new Event('change', { bubbles: true }));
+                                        break;
+                                    }
+                                }
+                            """,
+                                BOT_NAME,
+                            )
+                            name_entered = True
+                            logger.info("[Teams] Entered name via JS React fallback.")
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("[Teams] JS name entry failed: %s", exc)
+
+                    if not name_entered:
+                        logger.warning("[Teams] Could not enter bot name – continuing.")
+
+                    # Brief pause so "Join now" activates after name entry
+                    time.sleep(1)
+
+                    # ── 5. Click "Join now" ───────────────────────────────────
+                    joined = False
+                    for by, sel_str in [
+                        (By.XPATH, "//button[normalize-space(.)='Join now']"),
+                        (By.XPATH, "//button[contains(.,'Join now')]"),
+                        (By.XPATH, "//button[contains(.,'Join Now')]"),
+                        (By.CSS_SELECTOR, "[data-tid='prejoin-join-button']"),
+                        (By.CSS_SELECTOR, sel.get("join_button", "")),
+                    ]:
+                        if not sel_str:
+                            continue
+                        try:
+                            btn = WebDriverWait(self.driver, 8).until(
+                                EC.element_to_be_clickable((by, sel_str))
+                            )
+                            btn.click()
+                            logger.info(
+                                "[Teams] Clicked 'Join now' via %s='%s'.", by, sel_str
+                            )
+                            joined = True
+                            break
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+
+                    if not joined:
+                        # JS last-resort: scan buttons by text
+                        self.driver.execute_script(
+                            """
+                            var btns = document.querySelectorAll('button');
+                            for (var i = 0; i < btns.length; i++) {
+                                var t = (btns[i].innerText ||
+                                         btns[i].textContent || '').trim();
+                                if (t === 'Join now' || t === 'Join Now') {
+                                    btns[i].click(); return;
+                                }
+                            }
+                        """
+                        )
+                        logger.info("[Teams] Clicked 'Join now' via JS last-resort.")
+
+                else:
+                    # ── Enterprise Teams flow (teams.microsoft.com) ───────────
+                    use_browser = wait.until(
+                        EC.element_to_be_clickable(
+                            (
+                                By.CSS_SELECTOR,
+                                sel.get("use_browser_link", "a[data-tid='joinOnWeb']"),
+                            )
                         )
                     )
-                )
-                use_browser.click()
+                    use_browser.click()
 
-                # Continue without audio/video if prompted
-                self._safe_click(
-                    wait,
-                    sel.get("continue_without_audio", "[data-tid='prejoin-ok-cta']"),
-                    By.CSS_SELECTOR,
-                )
+                    self._safe_click(
+                        wait,
+                        sel.get(
+                            "continue_without_audio", "[data-tid='prejoin-ok-cta']"
+                        ),
+                        By.CSS_SELECTOR,
+                    )
+                    self._safe_click(
+                        wait,
+                        sel.get("mute_mic", "[data-tid='toggle-mute']"),
+                        By.CSS_SELECTOR,
+                    )
 
-                # Mute mic
-                self._safe_click(
-                    wait,
-                    sel.get("mute_mic", "[data-tid='toggle-mute']"),
-                    By.CSS_SELECTOR,
-                )
-
-                # Join call
-                join_btn = wait.until(
-                    EC.element_to_be_clickable(
-                        (
-                            By.CSS_SELECTOR,
-                            sel.get("join_button", "[data-tid='call-join-button']"),
+                    join_btn = wait.until(
+                        EC.element_to_be_clickable(
+                            (
+                                By.CSS_SELECTOR,
+                                sel.get("join_button", "[data-tid='call-join-button']"),
+                            )
                         )
                     )
-                )
-                join_btn.click()
+                    join_btn.click()
+
                 logger.info("[Teams] Joined successfully on attempt %d.", attempt)
                 return
 
@@ -625,6 +1022,30 @@ class MeetingAccess:
             except NoSuchElementException:
                 pass
 
+        # MS Teams: specific text phrases indicating meeting ended
+        if self.detected_platform == "teams":
+            try:
+                page_src = self.driver.page_source
+                _TEAMS_END_PHRASES = [
+                    "The meeting has ended",
+                    "You have left the meeting",
+                    "Enjoy your call?",
+                    "Rejoin the call",
+                    "Did you leave by mistake?",
+                    "Your meeting has expired",
+                ]
+                for phrase in _TEAMS_END_PHRASES:
+                    if phrase in page_src:
+                        logger.info(
+                            "[Teams] Meeting ended — found phrase: '%s'", phrase
+                        )
+                        return True
+            except Exception:
+                pass
+            # NOTE: We intentionally do NOT check URL redirects for Teams.
+            # After joining, Teams changes the URL (e.g. from /meet/ to
+            # /calling/) which caused false positives.
+
         # Zoom SDK: React page status check
         if self.detected_platform == "zoom_sdk":
             try:
@@ -670,15 +1091,46 @@ class MeetingAccess:
 
         Either signal returning True is sufficient.
         """
-        if self.detected_platform != "google_meet":
+        if self.detected_platform not in ("google_meet", "teams"):
             return False
 
+        # Teams: if the bot is still in the lobby, it's NOT "alone in meeting"
+        if self.detected_platform == "teams":
+            try:
+                page_lower = self.driver.page_source.lower()
+                _LOBBY_INDICATORS = [
+                    "someone will let you in",
+                    "waiting to be let in",
+                    "waiting to be admitted",
+                    "let you in shortly",
+                ]
+                if any(ind in page_lower for ind in _LOBBY_INDICATORS):
+                    logger.debug(
+                        "[Teams] Bot is still in lobby — not checking alone status."
+                    )
+                    return False
+            except Exception:
+                pass
+
         # Patterns that indicate the agent is alone
-        _ALONE_PATTERNS = [
-            "No one else is in this meeting",
-            "You're the only one here",
-            "You are the only one here",
-        ]
+        if self.detected_platform == "google_meet":
+            _ALONE_PATTERNS = [
+                "No one else is in this meeting",
+                "You're the only one here",
+                "You are the only one here",
+                "Just you",
+            ]
+        elif self.detected_platform == "teams":
+            _ALONE_PATTERNS = [
+                "Waiting for others to join",
+                "Waiting for people to join",
+                "You're the only one in the meeting",
+                "You are the only one in the meeting",
+                "You're the only one here",
+                "You are the only one here",
+            ]
+        else:
+            _ALONE_PATTERNS = []
 
         # ── Strategy 1: driver.page_source (Python-level HTML search) ──
         # This is the most reliable method — it gets the COMPLETE raw HTML
@@ -688,21 +1140,19 @@ class MeetingAccess:
             page_src = self.driver.page_source
             for pattern in _ALONE_PATTERNS:
                 if pattern in page_src:
-                    logger.info(
-                        "Alone detected via page_source: found '%s'.", pattern
-                    )
+                    logger.info("Alone detected via page_source: found '%s'.", pattern)
                     return True
         except Exception as exc:  # noqa: BLE001
             logger.debug("page_source check failed: %s", exc)
 
         # ── Strategy 2-4: JavaScript-based checks (single call) ────────
         try:
-            result = self.driver.execute_script("""
+            result = self.driver.execute_script(
+                """
+                var patterns = arguments[0];
                 var debug = {};
 
                 // ── Strategy 2: role="alert" / role="status" elements ──
-                // Google Meet shows the "No one else" banner as a toast
-                // notification with role="alert".
                 var alertEls = document.querySelectorAll(
                     '[role="alert"], [role="status"], [role="marquee"]'
                 );
@@ -711,10 +1161,10 @@ class MeetingAccess:
                 for (var i = 0; i < alertEls.length; i++) {
                     var txt = alertEls[i].textContent || '';
                     debug.alertTexts.push(txt.substring(0, 100));
-                    if (txt.indexOf('No one else') !== -1 ||
-                        txt.indexOf('only one here') !== -1 ||
-                        txt.indexOf('the only one') !== -1) {
-                        return {alone: true, reason: 'alert_role', debug: debug};
+                    for (var j = 0; j < patterns.length; j++) {
+                        if (txt.indexOf(patterns[j]) !== -1) {
+                            return {alone: true, reason: 'alert_role', debug: debug};
+                        }
                     }
                 }
 
@@ -725,18 +1175,13 @@ class MeetingAccess:
                 debug.textLength = bodyText.length;
                 debug.textSnippet = bodyText.substring(0, 200);
 
-                var patterns = [
-                    'No one else is in this meeting',
-                    "You're the only one here",
-                    'You are the only one here',
-                ];
                 for (var j = 0; j < patterns.length; j++) {
                     if (bodyText.indexOf(patterns[j]) !== -1) {
                         return {alone: true, reason: 'textContent', debug: debug};
                     }
                 }
 
-                // ── Strategy 4: Count participant video tiles ──────────
+                // ── Strategy 4: Count participant video tiles (Meet only) ──
                 var tiles = document.querySelectorAll(
                     '[data-participant-id], [data-requested-participant-id]'
                 );
@@ -753,14 +1198,10 @@ class MeetingAccess:
                     return {alone: true, reason: 'single_tile', debug: debug};
                 }
 
-                // ── Strategy 5: Check for "Just you" in People panel ──
-                // Even when the panel is closed, the DOM may contain this
-                if (bodyText.indexOf('Just you') !== -1) {
-                    return {alone: true, reason: 'just_you_text', debug: debug};
-                }
-
                 return {alone: false, reason: 'none', debug: debug};
-            """)
+            """,
+                _ALONE_PATTERNS,
+            )
 
             if result:
                 debug_info = result.get("debug", {})
@@ -838,7 +1279,10 @@ class MeetingAccess:
             try:
                 btn = WebDriverWait(self.driver, 3).until(
                     EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, sel.get("leave_call_button", "[data-tid='leave-call-btn']"))
+                        (
+                            By.CSS_SELECTOR,
+                            sel.get("leave_call_button", "[data-tid='leave-call-btn']"),
+                        )
                     )
                 )
                 btn.click()

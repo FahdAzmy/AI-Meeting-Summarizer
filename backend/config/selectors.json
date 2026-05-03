@@ -25,8 +25,10 @@
   "teams": {
     "use_browser_link": "a[data-tid='joinOnWeb']",
     "continue_without_audio": "[data-tid='prejoin-ok-cta']",
-    "join_button": "[data-tid='call-join-button']",
+    "join_button": "[data-tid='prejoin-join-button'], [data-tid='call-join-button']",
     "mute_mic": "[data-tid='toggle-mute']",
+    "dont_use_audio": "[data-tid='prejoin-audio-option-none'], [aria-label*='audio']",
+    "name_field": "input[placeholder='Type your name'], input[data-tid='prejoin-display-name-input']",
     "leave_call_button": "[data-tid='leave-call-btn']",
     "meeting_end_text": "//span[contains(text(), 'The call ended')]"
   }
