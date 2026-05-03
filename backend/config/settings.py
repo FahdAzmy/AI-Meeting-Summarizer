@@ -143,6 +143,26 @@ class Config(BaseSettings):
     )
 
     # ------------------------------------------------------------------
+    # Zoom Meeting SDK – Meeting Access Module (SPEC-011)
+    # ------------------------------------------------------------------
+    ZOOM_SDK_CLIENT_ID: str = Field(
+        default="",
+        description=(
+            "Public identifier for the Zoom Meeting SDK App. "
+            "Obtain from the Zoom App Marketplace under App Credentials. "
+            "Required for SDK-based Zoom joining; falls back to Selenium if empty."
+        ),
+    )
+    ZOOM_SDK_CLIENT_SECRET: str = Field(
+        default="",
+        description=(
+            "Secret key used to sign JWT signatures for the Zoom Meeting SDK. "
+            "NEVER expose this value to the frontend. "
+            "Required for SDK-based Zoom joining; falls back to Selenium if empty."
+        ),
+    )
+
+    # ------------------------------------------------------------------
     # Pydantic-settings configuration
     # ------------------------------------------------------------------
     model_config = {

@@ -103,6 +103,15 @@ try:
 except ImportError:  # pragma: no cover
     OutputStorage = _missing("OutputStorage")  # type: ignore[assignment,misc]
 
+try:
+    from config.settings import Config as _Config
+    from src.helpers.zoom_sdk import parse_zoom_url as _parse_zoom_url
+    _zoom_sdk_available = True
+except ImportError:  # pragma: no cover
+    _Config = _missing("Config")  # type: ignore[assignment,misc]
+    _parse_zoom_url = None  # type: ignore[assignment]
+    _zoom_sdk_available = False
+
 
 # ---------------------------------------------------------------------------
 # Audio extraction helper
@@ -210,8 +219,55 @@ async def run_pipeline(
         await meeting.save()
         logger.debug("Stage JOINING | id=%s", meeting.id)
 
-        access = MeetingAccess()
-        await asyncio.to_thread(access.join, meeting_link)
+        # ── Zoom Meeting SDK routing (T017 / US4) ───────────────────────────
+        # Determine whether to use the Zoom Meeting SDK or fall back to the
+        # existing Selenium-based MeetingAccess module.
+        #
+        # SDK path:      Zoom URL  +  both credentials configured
+        # Selenium path: any other platform  OR  credentials missing (T018)
+        _use_zoom_sdk = False
+        if _zoom_sdk_available and _parse_zoom_url is not None:
+            _zoom_details = _parse_zoom_url(meeting_link)
+            if _zoom_details:
+                # It is a Zoom link — check credentials
+                _cfg = _Config()
+                if _cfg.ZOOM_SDK_CLIENT_ID and _cfg.ZOOM_SDK_CLIENT_SECRET:
+                    _use_zoom_sdk = True
+                else:
+                    logger.warning(
+                        "Zoom URL detected but ZOOM_SDK_CLIENT_ID / "
+                        "ZOOM_SDK_CLIENT_SECRET not configured — "
+                        "falling back to Selenium for meeting id=%s",
+                        meeting.id,
+                    )
+
+        if _use_zoom_sdk:
+            # SDK path: the frontend background page (/zoom-meeting) handles
+            # joining.  The orchestrator opens it via the MeetingAccess module
+            # using a special Zoom-SDK URL instead of the raw meeting link.
+            import urllib.parse as _urlparse
+            _sdk_page_url = (
+                "http://localhost:3000/zoom-meeting"
+                f"?link={_urlparse.quote(meeting_link, safe='')}"
+                f"&meeting_id={meeting.id}"
+            )
+            logger.info(
+                "Stage JOINING via Zoom SDK | id=%s | sdk_page=%s",
+                meeting.id,
+                _sdk_page_url,
+            )
+            access = MeetingAccess()
+            await asyncio.to_thread(access.join, _sdk_page_url)
+        else:
+            # Selenium path: original implementation (Google Meet, Teams, or
+            # Zoom without SDK credentials configured).
+            logger.info(
+                "Stage JOINING via Selenium | id=%s | link=%s",
+                meeting.id,
+                meeting_link,
+            )
+            access = MeetingAccess()
+            await asyncio.to_thread(access.join, meeting_link)
 
         # ── Stage 2: Record audio ───────────────────────────────────────────
         meeting.status = MeetingStatus.RECORDING

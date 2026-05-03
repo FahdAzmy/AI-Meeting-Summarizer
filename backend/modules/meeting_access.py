@@ -42,6 +42,7 @@ _PLATFORM_PATTERNS: dict[str, re.Pattern] = {
         r"https?://teams\.microsoft\.com/l/meetup-join/[^\s]+",
         re.IGNORECASE,
     ),
+    "zoom_sdk": re.compile(r"https?://localhost:\d+/zoom-meeting.*", re.IGNORECASE),
 }
 
 _SELECTORS_PATH = Path(__file__).parent.parent / "config" / "selectors.json"
@@ -95,6 +96,7 @@ class MeetingAccess:
         router = {
             "google_meet": self._join_google_meet,
             "zoom": self._join_zoom,
+            "zoom_sdk": self._join_zoom_sdk,
             "teams": self._join_teams,
         }
         router[self.detected_platform](link)
@@ -221,9 +223,50 @@ class MeetingAccess:
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        # Block Chrome's native "Open Zoom Meetings?" protocol-handler prompt.
+        # Chrome raises this dialog when the page redirects to zoommtg://..
+        # Selenium cannot interact with native OS dialogs, so we suppress it
+        # at the Chrome preference level before any page is loaded.
+        prefs = {
+            "protocol_handler": {
+                "excluded_schemes": {
+                    "zoommtg": True,
+                    "zoomus": True,
+                    "zoom": True,
+                }
+            }
+        }
+        options.add_experimental_option("prefs", prefs)
         if headless:
             options.add_argument("--headless=new")
         return options
+
+    @staticmethod
+    def _zoom_web_client_url(link: str) -> str:
+        """Rewrite a standard Zoom meeting URL to the web-client join URL.
+
+        Example::
+            https://us05web.zoom.us/j/12345678900?pwd=abc
+            → https://us05web.zoom.us/wc/12345678900/join?pwd=abc
+
+        The web-client URL loads Zoom directly in the browser without
+        triggering the protocol-handler popup, so no "Cancel" click is needed.
+        Returns the original link unchanged if it cannot be parsed.
+        """
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(link)
+        # Match paths like /j/12345678900
+        m = re.match(r"/j/(\d+)", parsed.path)
+        if not m:
+            return link  # fallback – return as-is
+        meeting_id = m.group(1)
+        new_path = f"/wc/{meeting_id}/join"
+        web_url = urllib.parse.urlunparse(
+            (parsed.scheme, parsed.netloc, new_path, "", parsed.query, "")
+        )
+        logger.info("[Zoom] Rewrote URL to web client: %s", web_url)
+        return web_url
 
     # ──────────────────────────────────────────────────────────
     # Google Meet join logic (US1 – T015)
@@ -348,40 +391,98 @@ class MeetingAccess:
 
     def _join_zoom(self, link: str) -> None:
         sel = self.selectors.get("zoom", {})
+        # Rewrite to Zoom web-client URL – this bypasses the OS protocol-handler
+        # popup ("Open Zoom Meetings?") entirely. Chrome's zoommtg:// scheme is
+        # also blocked via Chrome prefs set in _build_chrome_options.
+        web_link = self._zoom_web_client_url(link)
         for attempt in range(1, self.retry_limit + 1):
             self.current_attempt = attempt
             try:
                 logger.info(
-                    "[Zoom] Attempt %d/%d – navigating to %s",
+                    "[Zoom] Attempt %d/%d – navigating to web client: %s",
                     attempt,
                     self.retry_limit,
-                    link,
+                    web_link,
                 )
-                self.driver.get(link)
+                self.driver.get(web_link)
 
-                wait = WebDriverWait(self.driver, 15)
+                # ── Wait for the "Enter Meeting Info" page to render ─────────
+                # The /wc/ SPA loads fast — 5 seconds is enough for the controls
+                # (mic toggle, name field, Join button) to become interactive.
+                time.sleep(5)
 
-                # Enter display name
-                name_field = wait.until(
-                    EC.presence_of_element_located(
-                        (By.CSS_SELECTOR, sel.get("name_field", "#inputname"))
-                    )
+                BOT_NAME = "AI Summarizer"
+
+                # ── Mute mic, fill name, click Join — all via JS ─────────────
+                # Using a single execute_script is the fastest path: no polling,
+                # no per-selector timeouts. The mic button on this page shows
+                # "Mute" when active (click it to mute). Camera is already off
+                # ("Start Video" button), so we leave it alone.
+                self.driver.execute_script(
+                    """
+                    var botName = arguments[0];
+
+                    // 1. Mute microphone – button whose text is exactly "Mute"
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || btns[i].textContent || '').trim();
+                        if (t === 'Mute') { btns[i].click(); break; }
+                    }
+
+                    // 2. Fill the name input
+                    var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+                    for (var j = 0; j < inputs.length; j++) {
+                        if (inputs[j].offsetParent !== null) {
+                            // Use React's native setter so the component state updates
+                            var setter = Object.getOwnPropertyDescriptor(
+                                window.HTMLInputElement.prototype, 'value').set;
+                            setter.call(inputs[j], botName);
+                            inputs[j].dispatchEvent(new Event('input',  { bubbles: true }));
+                            inputs[j].dispatchEvent(new Event('change', { bubbles: true }));
+                            break;
+                        }
+                    }
+                    """,
+                    BOT_NAME,
                 )
-                name_field.clear()
-                name_field.send_keys("AI Meeting Assistant")
+                logger.info("[Zoom] Muted mic and entered name '%s' via JS.", BOT_NAME)
 
-                # Click Join
-                join_btn = wait.until(
-                    EC.element_to_be_clickable(
-                        (
-                            By.CSS_SELECTOR,
-                            sel.get("join_button", ".preview-join-button"),
+                # Brief pause so React re-renders the Join button as enabled
+                time.sleep(0.5)
+
+                # ── Click Join ───────────────────────────────────────────────
+                # Try DOM selector first, fall back to JS text search.
+                joined = False
+                for by, selector in [
+                    (By.XPATH, "//button[normalize-space(text())='Join']"),
+                    (By.XPATH, "//button[.//span[normalize-space(text())='Join']]"),
+                    (By.CSS_SELECTOR, sel.get("join_button", "")),
+                ]:
+                    if not selector:
+                        continue
+                    try:
+                        join_btn = WebDriverWait(self.driver, 5).until(
+                            EC.element_to_be_clickable((by, selector))
                         )
-                    )
-                )
-                join_btn.click()
+                        join_btn.click()
+                        logger.info("[Zoom] Clicked Join via %s='%s'.", by, selector)
+                        joined = True
+                        break
+                    except (TimeoutException, NoSuchElementException):
+                        continue
+
+                if not joined:
+                    self.driver.execute_script("""
+                        var btns = document.querySelectorAll('button');
+                        for (var i = 0; i < btns.length; i++) {
+                            var t = (btns[i].innerText || btns[i].textContent || '').trim();
+                            if (t === 'Join') { btns[i].click(); break; }
+                        }
+                    """)
+                    logger.info("[Zoom] Clicked Join via JS fallback.")
 
                 # Detect and handle waiting room
+                wait = WebDriverWait(self.driver, 15)
                 self._handle_zoom_waiting_room(wait, sel)
 
                 logger.info("[Zoom] Joined successfully on attempt %d.", attempt)
@@ -408,6 +509,16 @@ class MeetingAccess:
             except NoSuchElementException:
                 return  # No longer in waiting room
         raise WaitingRoomTimeout(timeout_seconds=300)
+
+    # ──────────────────────────────────────────────────────────
+    # Zoom SDK join logic (US1 / US4)
+    # ──────────────────────────────────────────────────────────
+
+    def _join_zoom_sdk(self, link: str) -> None:
+        """The React background page handles joining automatically. Just load it."""
+        logger.info("[Zoom SDK] Loading background page: %s", link)
+        self.driver.get(link)
+        logger.info("[Zoom SDK] Background page loaded. The SDK will handle the rest.")
 
     # ──────────────────────────────────────────────────────────
     # MS Teams join logic (US1 – T017)
@@ -512,6 +623,15 @@ class MeetingAccess:
                 if "ended" in dialog.text.lower():
                     return True
             except NoSuchElementException:
+                pass
+
+        # Zoom SDK: React page status check
+        if self.detected_platform == "zoom_sdk":
+            try:
+                page_src = self.driver.page_source
+                if "Meeting ended" in page_src:
+                    return True
+            except Exception:
                 pass
 
         # Generic xpath check (all platforms)

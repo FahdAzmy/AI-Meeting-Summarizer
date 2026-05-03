@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from src.helpers.excel_generator import generate_all_meetings_excel, generate_single_meeting_excel
+from src.helpers.pdf_generator import generate_meeting_pdf
 from src.models.meeting import Meeting, MeetingStatus
 
 export_router = APIRouter(prefix="/export", tags=["export"])
@@ -87,8 +88,6 @@ async def export_single_meeting_excel(id: str):
 
 @export_router.get("/meetings/{id}/pdf")
 async def export_single_meeting_pdf(id: str):
-    from src.helpers.pdf_generator import generate_meeting_pdf
-
     try:
         meeting = await Meeting.get(PydanticObjectId(id))
     except Exception:

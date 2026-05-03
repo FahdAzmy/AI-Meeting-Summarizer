@@ -137,15 +137,19 @@ def patch_pipeline():
         MockCapture.return_value = capture_instance
 
         trans_instance = MagicMock()
-        trans_instance.transcribe = AsyncMock(return_value=FAKE_TRANSCRIPT)
+        # transcribe is a blocking sync method called via asyncio.to_thread
+        trans_instance.transcribe = MagicMock(return_value=FAKE_TRANSCRIPT)
         MockTranscription.return_value = trans_instance
 
         summ_instance = MagicMock()
-        summ_instance.generate_report = AsyncMock(return_value=FAKE_REPORT)
+        # generate_report is a blocking sync method called via asyncio.to_thread
+        summ_instance.generate_report = MagicMock(return_value=FAKE_REPORT)
         MockSummarisation.return_value = summ_instance
 
         output_instance = MagicMock()
         output_instance.store = AsyncMock()
+        # send_email is also async — must be AsyncMock so it can be awaited
+        output_instance.send_email = AsyncMock()
         MockOutput.return_value = output_instance
 
         # ── Namespace ───────────────────────────────────────────────────────
@@ -230,14 +234,16 @@ async def test_sequential_execution_order(patch_pipeline) -> None:
         call_order.append("start")
         return original_start(*a, **kw)
 
-    async def _record_transcribe(*a, **kw):
+    # transcribe and generate_report are sync (called via asyncio.to_thread)
+    def _record_transcribe(*a, **kw):
         call_order.append("transcribe")
         return FAKE_TRANSCRIPT
 
-    async def _record_generate_report(*a, **kw):
+    def _record_generate_report(*a, **kw):
         call_order.append("generate_report")
         return FAKE_REPORT
 
+    # store is async (directly awaited by the orchestrator)
     async def _record_store(*a, **kw):
         call_order.append("store")
 
@@ -291,8 +297,8 @@ async def test_transcript_flows_into_summarisation(patch_pipeline) -> None:
     """
     await run_pipeline(MEETING_LINK, EMAILS, STORAGE)
 
-    # generate_report must have been called with the transcript dict
-    patch_pipeline.summ_instance.generate_report.assert_awaited_once_with(
+    # generate_report is called synchronously via asyncio.to_thread — use assert_called_once_with
+    patch_pipeline.summ_instance.generate_report.assert_called_once_with(
         FAKE_TRANSCRIPT
     )
 
@@ -306,9 +312,10 @@ async def test_report_flows_into_output_storage(patch_pipeline) -> None:
     """
     await run_pipeline(MEETING_LINK, EMAILS, STORAGE)
 
-    # store must have been called with the report dict
+    # store is called as: await output.store(meeting, report, transcript)
+    # Verify the report (2nd arg) and transcript (3rd arg) flow through correctly.
     patch_pipeline.output_instance.store.assert_awaited_once_with(
-        FAKE_REPORT
+        patch_pipeline.meeting_instance, FAKE_REPORT, FAKE_TRANSCRIPT
     )
 
 

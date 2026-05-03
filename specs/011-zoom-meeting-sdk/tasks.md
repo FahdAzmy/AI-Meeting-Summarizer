@@ -11,9 +11,9 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 [P] Add `PyJWT>=2.8.0` dependency to `backend/requirements.txt`
-- [ ] T002 [P] Install `@zoom/meetingsdk` dependency in `frontend/package.json`
-- [ ] T003 Update configuration schema in `backend/config/settings.py` for `ZOOM_SDK_CLIENT_ID` and `ZOOM_SDK_CLIENT_SECRET`
+- [X] T001 [P] Add `PyJWT>=2.8.0` dependency to `backend/requirements.txt`
+- [X] T002 [P] Install `@zoom/meetingsdk` dependency in `frontend/package.json`
+- [X] T003 Update configuration schema in `backend/config/settings.py` for `ZOOM_SDK_CLIENT_ID` and `ZOOM_SDK_CLIENT_SECRET`
 
 ---
 
@@ -23,8 +23,8 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Setup `backend/src/helpers/zoom_sdk.py` placeholder module
-- [ ] T005 Setup `backend/src/routes/zoom.py` placeholder module
+- [X] T004 Setup `backend/src/helpers/zoom_sdk.py` placeholder module
+- [X] T005 Setup `backend/src/routes/zoom.py` placeholder module
 
 **Checkpoint**: Foundation ready - user story implementation can now begin
 
@@ -38,11 +38,11 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 ### Tests for User Story 3
 
-- [ ] T006 [P] [US3] Create tests for URL parsing in `backend/tests/unit/test_zoom_sdk.py`
+- [X] T006 [P] [US3] Create tests for URL parsing in `backend/tests/unit/test_zoom_sdk.py`
 
 ### Implementation for User Story 3
 
-- [ ] T007 [US3] Implement URL parsing regex logic in `backend/src/helpers/zoom_sdk.py`
+- [X] T007 [US3] Implement URL parsing regex logic in `backend/src/helpers/zoom_sdk.py`
 
 **Checkpoint**: URL parsing works independently
 
@@ -56,13 +56,13 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 ### Tests for User Story 5
 
-- [ ] T008 [P] [US5] Create tests for JWT signature generation in `backend/tests/unit/test_zoom_route.py`
+- [X] T008 [P] [US5] Create tests for JWT signature generation in `backend/tests/unit/test_zoom_route.py`
 
 ### Implementation for User Story 5
 
-- [ ] T009 [US5] Implement JWT token generation using `PyJWT` in `backend/src/helpers/zoom_sdk.py`
-- [ ] T010 [US5] Implement `POST /api/zoom/signature` endpoint in `backend/src/routes/zoom.py`
-- [ ] T011 [US5] Include `zoom` router in `backend/src/main.py`
+- [X] T009 [US5] Implement JWT token generation using `PyJWT` in `backend/src/helpers/zoom_sdk.py`
+- [X] T010 [US5] Implement `POST /api/zoom/signature` endpoint in `backend/src/routes/zoom.py`
+- [X] T011 [US5] Include `zoom` router in `backend/src/main.py`
 
 **Checkpoint**: Authorisation token endpoint works independently
 
@@ -76,12 +76,12 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 ### Tests for User Story 1
 
-- [ ] T012 [P] [US1] Create frontend tests for Zoom wrapper in `frontend/tests/zoom.test.ts`
+- [X] T012 [P] [US1] Create frontend tests for Zoom wrapper in `frontend/tests/zoom.test.ts`
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Create Zoom SDK initialization wrapper in `frontend/src/lib/zoom.ts`
-- [ ] T014 [US1] Implement dedicated background meeting page in `frontend/src/app/zoom-meeting/page.tsx`
+- [X] T013 [US1] Create Zoom SDK initialization wrapper in `frontend/src/lib/zoom.ts`
+- [X] T014 [US1] Implement dedicated background meeting page in `frontend/src/app/zoom-meeting/page.tsx`
 
 **Checkpoint**: The background page can join a meeting using the SDK
 
@@ -95,8 +95,8 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Add event listeners (e.g. `onLeave`) to the SDK client in `frontend/src/app/zoom-meeting/page.tsx`
-- [ ] T016 [US2] Implement backend API call from frontend to update pipeline status when meeting ends
+- [X] T015 [US2] Add event listeners (e.g. `onLeave`) to the SDK client in `frontend/src/app/zoom-meeting/page.tsx`
+- [X] T016 [US2] Implement backend API call from frontend to update pipeline status when meeting ends
 
 **Checkpoint**: The frontend can detect meeting end and update the backend
 
@@ -110,8 +110,8 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 ### Implementation for User Story 4
 
-- [ ] T017 [US4] Update `backend/src/orchestrator.py` to route Zoom URLs to the new SDK background page
-- [ ] T018 [US4] Implement fallback to Selenium in `orchestrator.py` if `ZOOM_SDK_CLIENT_SECRET` is missing
+- [X] T017 [US4] Update `backend/src/orchestrator.py` to route Zoom URLs to the new SDK background page
+- [X] T018 [US4] Implement fallback to Selenium in `orchestrator.py` if `ZOOM_SDK_CLIENT_SECRET` is missing
 
 **Checkpoint**: All user stories should now be independently functional
 
@@ -121,8 +121,8 @@ description: "Task list for Zoom Meeting SDK Integration"
 
 **Purpose**: Improvements that affect multiple user stories
 
-- [ ] T019 Run `quickstart.md` validation by testing the generated token endpoint
-- [ ] T020 Code cleanup and final formatting checks
+- [X] T019 Run `quickstart.md` validation by testing the generated token endpoint
+- [X] T020 Code cleanup and final formatting checks
 
 ---
 

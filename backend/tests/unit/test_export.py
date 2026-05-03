@@ -22,6 +22,7 @@ from httpx import AsyncClient, ASGITransport
 
 def _make_mock_meeting(**overrides: Any) -> MagicMock:
     from datetime import datetime, timezone
+    from src.models.meeting import MeetingStatus
     meeting = MagicMock()
     meeting.id = overrides.get("id", "507f1f77bcf86cd799439011")
     meeting.title = overrides.get("title", "Sprint Standup")
@@ -34,8 +35,7 @@ def _make_mock_meeting(**overrides: Any) -> MagicMock:
     meeting.follow_up = overrides.get("follow_up", ["Schedule retro"])
     meeting.speaker_stats = overrides.get("speaker_stats", {"speakers": [{"speaker": "Alice"}]})
     meeting.transcript = overrides.get("transcript", "Alice: Let's go.")
-    meeting.status = MagicMock()
-    meeting.status.value = "completed"
+    meeting.status = overrides.get("status", MeetingStatus.COMPLETED)
     return meeting
 
 
@@ -141,8 +141,6 @@ class TestExportSingleMeetingPdf:
         ):
             MockMeeting.get = AsyncMock(return_value=mock_meeting)
             MockMeeting.find = MagicMock()
-            mock_meeting.status = MagicMock()
-            mock_meeting.status.__eq__ = lambda self, other: True
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -174,8 +172,6 @@ class TestExportSingleMeetingPdf:
             patch("src.routes.export.generate_meeting_pdf", return_value=_pdf_bytes()),
         ):
             MockMeeting.get = AsyncMock(return_value=mock_meeting)
-            mock_meeting.status = MagicMock()
-            mock_meeting.status.__eq__ = lambda self, other: True
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -202,8 +198,6 @@ class TestExportSingleMeetingExcel:
             patch("src.routes.export.generate_single_meeting_excel", return_value=_excel_bytes()),
         ):
             MockMeeting.get = AsyncMock(return_value=mock_meeting)
-            mock_meeting.status = MagicMock()
-            mock_meeting.status.__eq__ = lambda self, other: True
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -235,8 +229,6 @@ class TestExportSingleMeetingExcel:
             patch("src.routes.export.generate_single_meeting_excel", return_value=_excel_bytes()),
         ):
             MockMeeting.get = AsyncMock(return_value=mock_meeting)
-            mock_meeting.status = MagicMock()
-            mock_meeting.status.__eq__ = lambda self, other: True
 
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:

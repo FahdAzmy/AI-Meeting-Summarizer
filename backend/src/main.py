@@ -105,10 +105,12 @@ app.add_middleware(
 
 from src.routes.api import api_router
 from src.routes.export import export_router
+from src.routes.zoom import zoom_router
 
 # Include routers
 app.include_router(api_router, prefix="/api")
 app.include_router(export_router, prefix="/api")
+app.include_router(zoom_router, prefix="/api")
 
 
 @app.get("/")
