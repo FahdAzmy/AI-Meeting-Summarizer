@@ -320,7 +320,7 @@ class Transcription:
                 url, 
                 headers=headers, 
                 data=payload, # Send bytes directly to enforce Content-Length
-                timeout=120
+                timeout=600
             )
             resp.raise_for_status()
             raw = resp.json()

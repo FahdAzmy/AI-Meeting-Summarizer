@@ -30,6 +30,7 @@ export interface Meeting {
   speaker_stats: SpeakerStatsObject | null;
   status: MeetingStatus;
   title?: string;
+  error_message?: string;
 }
 
 export interface PipelineStatus {

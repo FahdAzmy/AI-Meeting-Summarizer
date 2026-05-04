@@ -57,6 +57,10 @@ class Config(BaseSettings):
     # ------------------------------------------------------------------
     # STT (Speech-to-Text) API Keys – Transcription Module
     # ------------------------------------------------------------------
+    STT_PROVIDER: str = Field(
+        default="deepgram",
+        description="The default STT provider to use (whisper, deepgram, assemblyai).",
+    )
     WHISPER_API_KEY: str = Field(
         default="", description="OpenAI API key used for Whisper transcription."
     )
@@ -97,7 +101,7 @@ class Config(BaseSettings):
         ),
     )
     LLM_TIMEOUT: int = Field(
-        default=120,
+        default=300,
         description="Maximum seconds to wait for an LLM response before raising LLMTimeoutError.",
     )
 

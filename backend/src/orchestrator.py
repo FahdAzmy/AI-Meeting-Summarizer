@@ -114,9 +114,18 @@ except ImportError:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# Audio extraction helper
+# Helpers
 # ---------------------------------------------------------------------------
 
+def _detect_platform(link: str) -> str | None:
+    link_lower = link.lower()
+    if "zoom.us" in link_lower:
+        return "Zoom"
+    if "meet.google.com" in link_lower:
+        return "Google Meet"
+    if "teams.microsoft.com" in link_lower or "teams.live.com" in link_lower:
+        return "Microsoft Teams"
+    return "Unknown"
 
 def _extract_audio(video_path: str) -> str:
     """Extract audio track from an OBS video recording using ffmpeg.
@@ -208,7 +217,8 @@ async def run_pipeline(
       the FastAPI worker stays healthy.
     """
     # ── Create & persist initial meeting record ─────────────────────────────
-    meeting: Any = Meeting(meeting_link=meeting_link, session_id=session_id)
+    platform_name = _detect_platform(meeting_link)
+    meeting: Any = Meeting(meeting_link=meeting_link, session_id=session_id, platform=platform_name)
     await meeting.insert()
 
     logger.info("Pipeline started | link=%s | storage=%s", meeting_link, storage)
@@ -310,7 +320,8 @@ async def run_pipeline(
         await meeting.save()
         logger.debug("Stage TRANSCRIBING | id=%s", meeting.id)
 
-        transcriber = Transcription(provider="deepgram")
+        _cfg = _Config()
+        transcriber = Transcription(provider=_cfg.STT_PROVIDER)
         # transcribe() is synchronous (blocking network I/O) — run in thread
         transcript: dict[str, Any] = await asyncio.to_thread(
             transcriber.transcribe, audio_path
@@ -348,7 +359,28 @@ async def run_pipeline(
         await meeting.save()
         logger.info("Pipeline COMPLETED | id=%s", meeting.id)
 
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        # Map technical exceptions to human-readable error messages for the frontend
+        error_msg = "An unexpected error occurred during processing."
+        exc_str = str(exc).lower()
+        exc_type = type(exc).__name__.lower()
+        
+        if "timeout" in exc_str or "timeout" in exc_type:
+            if meeting.status == MeetingStatus.JOINING:
+                error_msg = "We couldn't join the meeting. The link might be invalid, or the host didn't let us in."
+            elif meeting.status == MeetingStatus.TRANSCRIBING:
+                error_msg = "The transcription service took too long to respond. The meeting might be too long."
+            else:
+                error_msg = "A network timeout occurred while processing your meeting."
+        elif "stt" in exc_type:
+             error_msg = "The transcription service failed to process the audio."
+        elif "obs" in exc_str or "websocket" in exc_str:
+             error_msg = "There was a problem recording the audio. The recording engine might be offline."
+        elif meeting.status == MeetingStatus.SUMMARISING:
+             error_msg = "The AI failed to generate a summary for this meeting."
+        elif meeting.status == MeetingStatus.DELIVERING:
+             error_msg = "The summary was created, but we couldn't send the emails."
+
         # Mark the meeting as failed so the dashboard can surface the error.
         # Nothing escapes to the FastAPI worker — the server must stay alive.
         logger.exception(
@@ -358,6 +390,7 @@ async def run_pipeline(
         )
         try:
             meeting.status = MeetingStatus.FAILED
+            meeting.error_message = error_msg
             await meeting.save()
         except Exception:  # noqa: BLE001
             logger.exception(

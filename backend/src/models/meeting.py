@@ -135,6 +135,9 @@ class Meeting(Document):
         default=MeetingStatus.PROCESSING,
         description="Current pipeline lifecycle state.",
     )
+    error_message: Optional[str] = Field(
+        None, description="Human-readable error message if the meeting failed."
+    )
     duration_minutes: Optional[int] = Field(
         None, description="Calculated meeting duration in whole minutes."
     )

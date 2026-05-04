@@ -199,7 +199,7 @@ class MeetingAccess:
                     "[Teams] Lobby timeout (%ds) — host never admitted.",
                     lobby_timeout,
                 )
-                return  # exit — give up waiting
+                raise TimeoutException("Waiting room timeout - host never admitted the bot.")
 
         alone_since: float | None = None  # timestamp when we first detected alone
         poll_count = 0

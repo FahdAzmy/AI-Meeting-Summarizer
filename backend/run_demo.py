@@ -34,8 +34,8 @@ def run_end_to_end_demo():
         print(f"      Saved file: {audio_file_path}\n")
 
         # 3. Transcribe with Deepgram
-        print(f"[3/3] Sending audio to Deepgram for Deep Learning Transcription...")
-        transcriber = Transcription(provider="assemblyai")
+        print(f"[3/3] Sending audio to STT Provider for Deep Learning Transcription...")
+        transcriber = Transcription(provider=cfg.STT_PROVIDER)
         
         start_time = time.time()
         result = transcriber.transcribe(audio_file_path)
