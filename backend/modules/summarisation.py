@@ -57,8 +57,60 @@ from modules.llm_errors import (
 
 logger = logging.getLogger(__name__)
 
-# Module-level config instance (reads from .env automatically)
-_cfg = Config()
+SUMMARY_SYSTEM_PROMPT = (
+    "You are an expert meeting analyst. "
+    "Extract a structured JSON object from the meeting transcript provided. "
+    "Your response MUST be valid JSON matching this schema exactly:\n"
+    "{\n"
+    '  "summary": "<markdown-formatted overview>",\n'
+    '  "action_items": [{"assignee": "<name>", "task": "<task>", "deadline": "<date or null>"}],\n'
+    '  "decisions": ["<decision 1>", ...],\n'
+    '  "follow_up": ["<follow-up point 1>", ...]\n'
+    "}\n"
+    "CRITICAL LANGUAGE RULE: First, identify the primary language written in the transcript text below. "
+    "If the transcript text is written in Arabic, you MUST formulate your entire JSON response (summary, tasks, decisions, etc.) in Arabic. "
+    "If the transcript text is written in English, you MUST formulate your entire JSON response in English. "
+    "Do NOT invent information not present in the transcript. "
+    "Be concise and factual. Return ONLY the JSON object."
+)
+
+SPEAKER_DETECTION_SYSTEM_PROMPT = (
+    "You are an expert meeting analyst specialising in speaker identification. "
+    "Below is a meeting transcript. The speech-to-text system recorded everything "
+    "as a single block of text without identifying individual speakers.\n\n"
+    "Your task is to SPLIT this text into individual conversation turns and identify "
+    "who is speaking in each turn using contextual clues:\n"
+    "  - Names mentioned (e.g. 'Thanks Ahmed', 'Hi Mr. Fahd')\n"
+    "  - Greeting and farewell patterns (first speaker usually greets)\n"
+    "  - Question-answer pairs (different speakers)\n"
+    "  - Role references ('As the manager...', 'I finished my task...')\n"
+    "  - Instructions vs. status updates (manager gives orders, team reports)\n\n"
+    "RULES:\n"
+    "1. Split the text at natural speaker change points.\n"
+    "2. ALWAYS use the participant's REAL NAME as the speaker label. "
+    "Look for names in greetings (e.g. 'Hello Mr. Fahd'), addresses "
+    "(e.g. 'Okay Mr. Ahmed'), and references throughout the text. "
+    "Only use generic labels like 'Speaker 1' as a LAST RESORT when "
+    "absolutely no name can be found anywhere in the transcript.\n"
+    "3. Be consistent - same person must always get the same name label.\n"
+    "4. Each turn's 'text' must be the EXACT words from the transcript (no rewording).\n"
+    "5. The concatenation of all turns must reproduce the full transcript.\n"
+    "6. Minimum 2 turns if you detect at least 2 different speakers.\n\n"
+    "Your response MUST be valid JSON matching this schema exactly:\n"
+    "{\n"
+    '  "turns": [{"speaker": "<name>", "text": "<exact words from transcript>"}, ...],\n'
+    '  "speakers_identified": <int>\n'
+    "}\n"
+    "Return ONLY the JSON object."
+)
+
+__all__ = [
+    "ActionItem",
+    "MeetingReportSchema",
+    "SpeakerDetectionSchema",
+    "SpeakerTurn",
+    "Summarisation",
+]
 
 # ---------------------------------------------------------------------------
 # Pydantic output schemas (strict JSON Mode binding)
@@ -101,7 +153,11 @@ class SpeakerDetectionSchema(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _analyse_participation(segments: list[dict[str, Any]]) -> dict | None:
+def _analyse_participation(
+    segments: list[dict[str, Any]],
+    *,
+    detection_method: str | None = None,
+) -> dict | None:
     """
     Compute per-speaker speaking time from diarised segments.
 
@@ -156,11 +212,14 @@ def _analyse_participation(segments: list[dict[str, Any]]) -> dict | None:
 
     most_active = speakers_list[0]["speaker"]
 
-    return {
+    result: dict[str, Any] = {
         "speakers": speakers_list,
         "most_active_speaker": most_active,
         "total_meeting_duration_sec": round(total_duration, 3),
     }
+    if detection_method is not None:
+        result["detection_method"] = detection_method
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -188,27 +247,89 @@ class Summarisation:
 
     _TEMPERATURE: float = 0.3
 
-    def __init__(self, model: str | None = None, temperature: float | None = None):
-        self.model: str = model or _cfg.LLM_MODEL
+    def __init__(
+        self,
+        model: str | None = None,
+        temperature: float | None = None,
+        config: Config | None = None,
+    ):
+        self._config = config or Config()
+        self.model: str = model or self._config.LLM_MODEL
         self.temperature: float = temperature if temperature is not None else self._TEMPERATURE
-        self._timeout: int = _cfg.LLM_TIMEOUT
+        self._timeout: int = self._config.LLM_TIMEOUT
 
         # Build a single reusable client pointed at the configured provider.
         self._client = openai.OpenAI(
-            api_key=_cfg.LLM_API_KEY or "no-key",  # Ollama doesn't need a real key
-            base_url=_cfg.LLM_BASE_URL,
+            api_key=self._config.LLM_API_KEY or "no-key",  # Ollama doesn't need a real key
+            base_url=self._config.LLM_BASE_URL,
         )
 
         logger.info(
             "[SM] Summarisation initialised. provider=%s model=%s timeout=%ds",
-            _cfg.LLM_BASE_URL,
+            self._config.LLM_BASE_URL,
             self.model,
             self._timeout,
         )
 
+    def close(self) -> None:
+        """Close the underlying LLM client when supported by the SDK."""
+        close_method = getattr(self._client, "close", None)
+        if callable(close_method):
+            close_method()
+
+    def __enter__(self) -> "Summarisation":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _call_llm(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        purpose: str,
+    ) -> str:
+        """Call the configured LLM, preferring JSON Mode with plain fallback."""
+        try:
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    timeout=self._timeout,
+                )
+            except openai.BadRequestError:
+                logger.warning(
+                    "[SM] %s: JSON Mode unsupported - retrying without response_format.",
+                    purpose,
+                )
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    temperature=temperature,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    timeout=self._timeout,
+                )
+        except openai.APITimeoutError as exc:
+            logger.error("[SM] LLM request timed out: %s", exc)
+            raise LLMTimeoutError(timeout_seconds=self._timeout, cause=exc) from exc
+        except openai.APIError as exc:
+            logger.error("[SM] LLM API error: %s", exc)
+            raise LLMAPIError(cause=exc) from exc
+
+        return response.choices[0].message.content or ""
 
     def _generate_summary(self, transcript: dict[str, Any]) -> MeetingReportSchema:
         """
@@ -235,70 +356,22 @@ class Summarisation:
         """
         full_text = transcript["full_text"]
 
-        system_prompt = (
-            "You are an expert meeting analyst. "
-            "Extract a structured JSON object from the meeting transcript provided. "
-            "Your response MUST be valid JSON matching this schema exactly:\n"
-            "{\n"
-            '  "summary": "<markdown-formatted overview>",\n'
-            '  "action_items": [{"assignee": "<name>", "task": "<task>", "deadline": "<date or null>"}],\n'
-            '  "decisions": ["<decision 1>", ...],\n'
-            '  "follow_up": ["<follow-up point 1>", ...]\n'
-            "}\n"
-            "CRITICAL LANGUAGE RULE: First, identify the primary language written in the transcript text below. "
-            "If the transcript text is written in Arabic, you MUST formulate your entire JSON response (summary, tasks, decisions, etc.) in Arabic. "
-            "If the transcript text is written in English, you MUST formulate your entire JSON response in English. "
-            "Do NOT invent information not present in the transcript. "
-            "Be concise and factual. Return ONLY the JSON object."
-        )
-
         user_prompt = f"Meeting transcript:\n\n{full_text}"
 
         logger.info(
             "[SM] Sending transcript to LLM. provider=%s model=%s temperature=%s chars=%d",
-            _cfg.LLM_BASE_URL,
+            self._config.LLM_BASE_URL,
             self.model,
             self.temperature,
             len(full_text),
         )
 
-        try:
-            # Attempt with JSON Mode first (supported by OpenAI, OpenRouter, Groq, Mistral).
-            # Some providers (e.g. older Ollama models) don't support response_format,
-            # so we fall back to plain-text parsing on BadRequestError.
-            try:
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    temperature=self.temperature,
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    timeout=self._timeout,
-                )
-            except openai.BadRequestError:
-                # Provider doesn't support JSON Mode – retry without it.
-                logger.warning(
-                    "[SM] Provider does not support JSON Mode – retrying without response_format."
-                )
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    temperature=self.temperature,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    timeout=self._timeout,
-                )
-        except openai.APITimeoutError as exc:
-            logger.error("[SM] LLM request timed out: %s", exc)
-            raise LLMTimeoutError(timeout_seconds=self._timeout, cause=exc) from exc
-        except openai.APIError as exc:
-            logger.error("[SM] LLM API error: %s", exc)
-            raise LLMAPIError(cause=exc) from exc
-
-        raw_content = response.choices[0].message.content or ""
+        raw_content = self._call_llm(
+            system_prompt=SUMMARY_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            temperature=self.temperature,
+            purpose="Summary generation",
+        )
         logger.info("[SM] LLM response received. length=%d chars", len(raw_content))
 
         try:
@@ -348,36 +421,6 @@ class Summarisation:
 
         total_duration = float(transcript.get("duration_seconds", 0.0))
 
-        system_prompt = (
-            "You are an expert meeting analyst specialising in speaker identification. "
-            "Below is a meeting transcript. The speech-to-text system recorded everything "
-            "as a single block of text without identifying individual speakers.\n\n"
-            "Your task is to SPLIT this text into individual conversation turns and identify "
-            "who is speaking in each turn using contextual clues:\n"
-            "  - Names mentioned (e.g. 'Thanks Ahmed', 'Hi Mr. Fahd')\n"
-            "  - Greeting and farewell patterns (first speaker usually greets)\n"
-            "  - Question-answer pairs (different speakers)\n"
-            "  - Role references ('As the manager...', 'I finished my task...')\n"
-            "  - Instructions vs. status updates (manager gives orders, team reports)\n\n"
-            "RULES:\n"
-            "1. Split the text at natural speaker change points.\n"
-            "2. ALWAYS use the participant's REAL NAME as the speaker label. "
-            "Look for names in greetings (e.g. 'Hello Mr. Fahd'), addresses "
-            "(e.g. 'Okay Mr. Ahmed'), and references throughout the text. "
-            "Only use generic labels like 'Speaker 1' as a LAST RESORT when "
-            "absolutely no name can be found anywhere in the transcript.\n"
-            "3. Be consistent - same person must always get the same name label.\n"
-            "4. Each turn's 'text' must be the EXACT words from the transcript (no rewording).\n"
-            "5. The concatenation of all turns must reproduce the full transcript.\n"
-            "6. Minimum 2 turns if you detect at least 2 different speakers.\n\n"
-            "Your response MUST be valid JSON matching this schema exactly:\n"
-            "{\n"
-            '  "turns": [{"speaker": "<name>", "text": "<exact words from transcript>"}, ...],\n'
-            '  "speakers_identified": <int>\n'
-            "}\n"
-            "Return ONLY the JSON object."
-        )
-
         user_prompt = f"Full meeting transcript:\n\n{full_text}"
 
         logger.info(
@@ -386,32 +429,12 @@ class Summarisation:
         )
 
         try:
-            try:
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    temperature=0.1,  # very low - factual inference
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    timeout=self._timeout,
-                )
-            except openai.BadRequestError:
-                logger.warning(
-                    "[SM] Text speaker detection: JSON Mode unsupported - retrying."
-                )
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    temperature=0.1,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    timeout=self._timeout,
-                )
-
-            raw_content = response.choices[0].message.content or ""
+            raw_content = self._call_llm(
+                system_prompt=SPEAKER_DETECTION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                purpose="Text speaker detection",
+            )
             payload = json.loads(raw_content)
             detection = SpeakerDetectionSchema(**payload)
 
@@ -499,9 +522,10 @@ class Summarisation:
         # Layer 1: STT audio-based diarisation (pure math, no LLM cost)
         if transcript.get("diarisation_available") and segments:
             logger.info("[SM] Computing speaker analytics from STT diarisation data.")
-            speaker_stats = _analyse_participation(segments)
-            if speaker_stats:
-                speaker_stats["detection_method"] = "stt_diarisation"
+            speaker_stats = _analyse_participation(
+                segments,
+                detection_method="stt_diarisation",
+            )
 
         # Layer 2: LLM text-based context analysis (ALWAYS runs when segments exist)
         # This catches cases where STT sees 1 speaker (shared mic) but the text
@@ -511,9 +535,11 @@ class Summarisation:
                 "[SM] Running LLM-based text speaker analysis (context detection)."
             )
             enriched_segments = self._detect_speakers_from_text(transcript)
-            text_speaker_analysis = _analyse_participation(enriched_segments)
+            text_speaker_analysis = _analyse_participation(
+                enriched_segments,
+                detection_method="llm_inferred",
+            )
             if text_speaker_analysis:
-                text_speaker_analysis["detection_method"] = "llm_inferred"
                 logger.info(
                     "[SM] LLM text speaker analysis complete: %d speakers found.",
                     len(text_speaker_analysis.get("speakers", [])),

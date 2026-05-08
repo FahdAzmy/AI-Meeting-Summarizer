@@ -436,7 +436,7 @@ async def test_exception_in_transcribe_marks_failed(patch_pipeline) -> None:
     The orchestrator's top-level ``try/except`` must catch the error,
     set ``meeting.status = MeetingStatus.FAILED``, and call ``save()``.
     """
-    patch_pipeline.trans_instance.transcribe = AsyncMock(
+    patch_pipeline.trans_instance.transcribe = MagicMock(
         side_effect=RuntimeError("STT provider unavailable")
     )
 
@@ -452,7 +452,7 @@ async def test_exception_in_transcribe_marks_failed(patch_pipeline) -> None:
 @pytest.mark.asyncio
 async def test_exception_in_summarisation_marks_failed(patch_pipeline) -> None:
     """If ``generate_report()`` raises, the meeting must end up FAILED."""
-    patch_pipeline.summ_instance.generate_report = AsyncMock(
+    patch_pipeline.summ_instance.generate_report = MagicMock(
         side_effect=ValueError("LLM quota exceeded")
     )
 

@@ -17,7 +17,7 @@ Coverage map:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, call, patch
+from unittest.mock import ANY, MagicMock, PropertyMock, call, patch
 
 import pytest
 
@@ -55,6 +55,12 @@ def _make_mock_driver() -> MagicMock:
 # ──────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def no_real_sleep():
+    with patch("modules.meeting_access.time.sleep"):
+        yield
+
+
 @pytest.fixture()
 def mock_chrome(tmp_path):
     """Patch webdriver.Chrome and ChromeDriverManager globally so no browser spawns."""
@@ -84,9 +90,10 @@ def bot(mock_chrome, tmp_path):
 
 class TestDetectPlatform:
     def test_google_meet_url_detected(self):
-        from modules.meeting_access import MeetingAccess
+        from modules.meeting_access import MeetingAccess, Platform
 
         assert MeetingAccess._detect_platform(GOOGLE_MEET_URL) == "google_meet"
+        assert MeetingAccess._detect_platform(GOOGLE_MEET_URL) == Platform.GOOGLE_MEET
 
     def test_zoom_url_detected(self):
         from modules.meeting_access import MeetingAccess
@@ -212,9 +219,8 @@ class TestJoinGoogleMeet:
 
 
 class TestJoinZoom:
-    def test_display_name_sent_to_name_field(self, bot):
-        """Bot must type its name in the Zoom input field."""
-        name_el = MagicMock()
+    def test_display_name_sent_to_zoom_prejoin_script(self, bot):
+        """Bot name must be passed to the Zoom prejoin JS script."""
         join_btn = MagicMock()
 
         with (
@@ -223,14 +229,13 @@ class TestJoinZoom:
         ):
             wait_instance = MagicMock()
             mock_wait.return_value = wait_instance
-            wait_instance.until.side_effect = [name_el, join_btn]
+            wait_instance.until.return_value = join_btn
 
             bot.join(ZOOM_URL)
 
-        name_el.send_keys.assert_called_once_with("AI Meeting Assistant")
+        bot.driver.execute_script.assert_any_call(ANY, "AI Summarizer")
 
     def test_join_button_clicked_after_name(self, bot):
-        name_el = MagicMock()
         join_btn = MagicMock()
 
         with (
@@ -239,7 +244,7 @@ class TestJoinZoom:
         ):
             wait_instance = MagicMock()
             mock_wait.return_value = wait_instance
-            wait_instance.until.side_effect = [name_el, join_btn]
+            wait_instance.until.return_value = join_btn
 
             bot.join(ZOOM_URL)
 
@@ -415,9 +420,9 @@ class TestRetryLoop:
 
         with (
             patch("modules.meeting_access.WebDriverWait") as mock_wait,
-            patch("modules.meeting_access.time.sleep"),
+            patch.object(bot, "_handle_zoom_waiting_room", side_effect=TimeoutException()),
         ):
-            mock_wait.return_value.until.side_effect = TimeoutException()
+            mock_wait.return_value.until.return_value = MagicMock()
 
             with pytest.raises(MeetingJoinError):
                 bot.join(ZOOM_URL)

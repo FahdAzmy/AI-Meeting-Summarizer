@@ -36,7 +36,7 @@ import logging
 import os
 import mimetypes
 import time
-from typing import Any
+from typing import Any, Callable, TypedDict
 
 import assemblyai as aai
 import openai
@@ -57,10 +57,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+_25_MB = 25 * 1024 * 1024
+_500_MB = 500 * 1024 * 1024
+
 _MAX_AUDIO_BYTES: dict[str, int] = {
-    "whisper": 25 * 1024 * 1024,     # 25 MB  – OpenAI hard limit
-    "deepgram": 500 * 1024 * 1024,   # 500 MB – Deepgram supports up to 2 GB
-    "assemblyai": 500 * 1024 * 1024, # 500 MB – AssemblyAI supports large files
+    "whisper": _25_MB,
+    "deepgram": _500_MB,
+    "assemblyai": _500_MB,
 }
 _RETRY_ATTEMPTS: int = 3
 _FALLBACK_ORDER: dict[str, str] = {
@@ -69,8 +72,28 @@ _FALLBACK_ORDER: dict[str, str] = {
     "assemblyai": "whisper",
 }
 
-# Type alias – mirrors the data-model.md spec exactly
-TranscriptResult = dict[str, Any]
+
+class TranscriptSegment(TypedDict):
+    """A normalized transcription segment."""
+
+    speaker: str | None
+    start_time: float
+    end_time: float
+    text: str
+
+
+class TranscriptResult(TypedDict):
+    """Normalized transcription payload shared across the pipeline."""
+
+    full_text: str
+    segments: list[TranscriptSegment]
+    language: str
+    duration_seconds: float
+    provider: str
+    diarisation_available: bool
+
+
+__all__ = ["TranscriptResult", "TranscriptSegment", "Transcription"]
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +117,12 @@ class Transcription:
 
     SUPPORTED_PROVIDERS = {"whisper", "deepgram", "assemblyai"}
 
-    def __init__(self, provider: str = "whisper", language_code: str | None = "en") -> None:
+    def __init__(
+        self,
+        provider: str = "whisper",
+        language_code: str | None = "en",
+        config: Config | None = None,
+    ) -> None:
         if provider not in self.SUPPORTED_PROVIDERS:
             raise ValueError(
                 f"Unsupported provider '{provider}'. "
@@ -102,11 +130,22 @@ class Transcription:
             )
         self.provider: str = provider
         self.language_code: str | None = language_code
-        cfg = Config()
+        cfg = config or Config()
         self.api_keys: dict[str, str] = {
             "whisper": cfg.WHISPER_API_KEY,
             "deepgram": cfg.DEEPGRAM_API_KEY,
             "assemblyai": cfg.ASSEMBLYAI_API_KEY,
+        }
+        self._whisper_client: Any | None = None
+        self._dispatchers: dict[str, Callable[[str], dict[str, Any]]] = {
+            "whisper": self._transcribe_whisper,
+            "deepgram": self._transcribe_deepgram,
+            "assemblyai": self._transcribe_assemblyai,
+        }
+        self._normalisers: dict[str, Callable[[dict[str, Any]], TranscriptResult]] = {
+            "whisper": self._normalise_whisper,
+            "deepgram": self._normalise_deepgram,
+            "assemblyai": self._normalise_assemblyai,
         }
         logger.info(
             "Transcription router initialised with provider='%s', language_code=%s.",
@@ -142,11 +181,14 @@ class Transcription:
         """
         # ── TR-004: provider-specific file-size guard ────────────────────
         file_size = os.path.getsize(audio_path)
-        max_bytes = _MAX_AUDIO_BYTES.get(self.provider, 25 * 1024 * 1024)
+        max_bytes = _MAX_AUDIO_BYTES.get(self.provider, _25_MB)
         if file_size > max_bytes:
             logger.error(
                 "Audio file '%s' is %d bytes – exceeds %d byte limit for '%s'.",
-                audio_path, file_size, max_bytes, self.provider,
+                audio_path,
+                file_size,
+                max_bytes,
+                self.provider,
             )
             raise AudioTooLargeError(audio_path, file_size)
 
@@ -187,7 +229,7 @@ class Transcription:
 
             except STTTimeoutError:
                 # TR-002: exponential backoff
-                sleep_secs = min(2 ** attempt * 5, 20)
+                sleep_secs = min(2**attempt * 5, 20)
                 logger.warning(
                     "Timeout (408) on '%s', attempt %d/%d; sleeping %ds.",
                     self.provider,
@@ -202,19 +244,35 @@ class Transcription:
         # Should not reach here under normal flow
         raise STTProviderError(self.provider, "All retry attempts exhausted.")
 
+    def close(self) -> None:
+        """Release reusable SDK clients when they expose a close hook."""
+        close_method = getattr(self._whisper_client, "close", None)
+        if callable(close_method):
+            close_method()
+        self._whisper_client = None
+
+    def __enter__(self) -> "Transcription":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
     # ------------------------------------------------------------------
     # Internal dispatcher
     # ------------------------------------------------------------------
 
     def _dispatch(self, audio_path: str) -> dict[str, Any]:
         """Select and call the correct provider method."""
-        if self.provider == "whisper":
-            return self._transcribe_whisper(audio_path)
-        if self.provider == "deepgram":
-            return self._transcribe_deepgram(audio_path)
-        if self.provider == "assemblyai":
-            return self._transcribe_assemblyai(audio_path)
+        dispatcher = self._dispatchers.get(self.provider)
+        if dispatcher is not None:
+            return dispatcher(audio_path)
         raise STTProviderError(self.provider, f"Unknown provider: {self.provider}")
+
+    def _get_whisper_client(self) -> Any:
+        """Return a per-instance OpenAI client for Whisper calls."""
+        if self._whisper_client is None:
+            self._whisper_client = openai.OpenAI(api_key=self.api_keys["whisper"])
+        return self._whisper_client
 
     # ------------------------------------------------------------------
     # Provider implementations
@@ -244,7 +302,7 @@ class Transcription:
         """
         logger.info("Calling OpenAI Whisper: file='%s'.", audio_path)
         try:
-            client = openai.OpenAI(api_key=self.api_keys["whisper"])
+            client = self._get_whisper_client()
             with open(audio_path, "rb") as audio_file:
                 kwargs: dict[str, Any] = {
                     "model": "whisper-1",
@@ -264,7 +322,9 @@ class Transcription:
                 "duration": getattr(response, "duration", 0.0),
                 "_provider": "whisper",
             }
-            logger.debug("Whisper raw response received: %d segment(s).", len(raw["segments"]))
+            logger.debug(
+                "Whisper raw response received: %d segment(s).", len(raw["segments"])
+            )
             return raw
 
         except openai.APIStatusError as exc:
@@ -306,21 +366,23 @@ class Transcription:
         # Dynamically determine content type from file extension (e.g. .mp4 -> video/mp4)
         mime_type, _ = mimetypes.guess_type(audio_path)
         content_type = mime_type if mime_type else "audio/wav"
-        
+
         headers = {
             "Authorization": f"Token {self.api_keys['deepgram']}",
             "Content-Type": content_type,
         }
-        logger.info("Calling Deepgram: file='%s' (Content-Type: %s)", audio_path, content_type)
+        logger.info(
+            "Calling Deepgram: file='%s' (Content-Type: %s)", audio_path, content_type
+        )
         try:
             with open(audio_path, "rb") as f:
                 payload = f.read()
-                
+
             resp = requests.post(
-                url, 
-                headers=headers, 
-                data=payload, # Send bytes directly to enforce Content-Length
-                timeout=600
+                url,
+                headers=headers,
+                data=payload,  # Send bytes directly to enforce Content-Length
+                timeout=600,
             )
             resp.raise_for_status()
             raw = resp.json()
@@ -362,7 +424,10 @@ class Transcription:
             if self.language_code:
                 # Explicit language: no auto-detection, transcribe exactly in this language.
                 # universal-3-pro is fine here since we're forcing the language.
-                logger.info("[ST] Forcing language_code='%s' for AssemblyAI.", self.language_code)
+                logger.info(
+                    "[ST] Forcing language_code='%s' for AssemblyAI.",
+                    self.language_code,
+                )
                 cfg = aai.TranscriptionConfig(
                     speaker_labels=True,
                     speech_models=[aai.SpeechModel.universal],
@@ -373,7 +438,9 @@ class Transcription:
                 # universal-3-pro (SpeechModel.universal) has an Arabic bias for
                 # Arabic-accented English speakers. universal-2 has more balanced
                 # language detection for bilingual environments.
-                logger.info("[ST] language_code not set – using universal-2 with language detection.")
+                logger.info(
+                    "[ST] language_code not set – using universal-2 with language detection."
+                )
                 cfg = aai.TranscriptionConfig(
                     speaker_labels=True,
                     speech_models=["universal-2"],
@@ -384,7 +451,9 @@ class Transcription:
             transcript = transcriber.transcribe(audio_path)
 
             if transcript.status == aai.TranscriptStatus.error:
-                raise STTProviderError("assemblyai", transcript.error or "Unknown error")
+                raise STTProviderError(
+                    "assemblyai", transcript.error or "Unknown error"
+                )
 
             raw: dict[str, Any] = {
                 "text": transcript.text or "",
@@ -438,12 +507,9 @@ class Transcription:
         provider = raw.get("_provider", self.provider)
 
         try:
-            if provider == "whisper":
-                return self._normalise_whisper(raw)
-            if provider == "deepgram":
-                return self._normalise_deepgram(raw)
-            if provider == "assemblyai":
-                return self._normalise_assemblyai(raw)
+            normaliser = self._normalisers.get(provider)
+            if normaliser is not None:
+                return normaliser(raw)
             raise NormalisationError(provider, f"Unknown provider key: {provider}")
         except (NormalisationError, KeyError, TypeError, AttributeError) as exc:
             if isinstance(exc, NormalisationError):
@@ -452,14 +518,14 @@ class Transcription:
 
     def _normalise_whisper(self, raw: dict[str, Any]) -> TranscriptResult:
         """Normalise an OpenAI Whisper verbose_json response."""
-        segments = []
+        segments: list[TranscriptSegment] = []
         for seg in raw.get("segments", []):
             segments.append(
                 {
                     "speaker": None,  # Whisper has no diarization
-                    "start_time": float(seg.get("start", 0.0)),
-                    "end_time": float(seg.get("end", 0.0)),
-                    "text": seg.get("text", "").strip(),
+                    "start_time": float(self._segment_value(seg, "start", 0.0)),
+                    "end_time": float(self._segment_value(seg, "end", 0.0)),
+                    "text": str(self._segment_value(seg, "text", "")).strip(),
                 }
             )
         return {
@@ -471,56 +537,31 @@ class Transcription:
             "diarisation_available": False,
         }
 
+    @staticmethod
+    def _segment_value(segment: Any, key: str, default: Any) -> Any:
+        """Read a segment value from dict-like or SDK object responses."""
+        if isinstance(segment, dict):
+            return segment.get(key, default)
+        return getattr(segment, key, default)
+
     def _normalise_deepgram(self, raw: dict[str, Any]) -> TranscriptResult:
         """Normalise a Deepgram Nova diarization response."""
         try:
             result = raw["results"]["channels"][0]["alternatives"][0]
         except (KeyError, IndexError) as exc:
-            raise NormalisationError("deepgram", f"Unexpected structure: {exc}") from exc
+            raise NormalisationError(
+                "deepgram", f"Unexpected structure: {exc}"
+            ) from exc
 
         full_text: str = result.get("transcript", "")
         words = result.get("words", [])
 
-        # Build speaker-labelled segments by grouping consecutive words per speaker
-        segments: list[dict] = []
-        if words:
-            current_speaker = words[0].get("speaker", 0)
-            chunk_start = float(words[0].get("start", 0.0))
-            chunk_words: list[str] = [words[0].get("punctuated_word", words[0].get("word", ""))]
-            chunk_end = float(words[0].get("end", 0.0))
-
-            for word in words[1:]:
-                spk = word.get("speaker", current_speaker)
-                if spk != current_speaker:
-                    segments.append(
-                        {
-                            "speaker": f"Speaker {current_speaker}",
-                            "start_time": chunk_start,
-                            "end_time": chunk_end,
-                            "text": " ".join(chunk_words),
-                        }
-                    )
-                    current_speaker = spk
-                    chunk_start = float(word.get("start", chunk_end))
-                    chunk_words = []
-                chunk_words.append(word.get("punctuated_word", word.get("word", "")))
-                chunk_end = float(word.get("end", chunk_end))
-
-            segments.append(
-                {
-                    "speaker": f"Speaker {current_speaker}",
-                    "start_time": chunk_start,
-                    "end_time": chunk_end,
-                    "text": " ".join(chunk_words),
-                }
-            )
+        segments = self._group_words_by_speaker(words)
 
         # Duration from metadata
         duration = 0.0
         try:
-            duration = float(
-                raw["metadata"]["duration"]
-            )
+            duration = float(raw["metadata"]["duration"])
         except (KeyError, TypeError, ValueError):
             pass
 
@@ -532,6 +573,48 @@ class Transcription:
             "provider": "deepgram",
             "diarisation_available": True,
         }
+
+    @staticmethod
+    def _group_words_by_speaker(words: list[dict[str, Any]]) -> list[TranscriptSegment]:
+        """Group consecutive Deepgram words into speaker-labelled segments."""
+        if not words:
+            return []
+
+        segments: list[TranscriptSegment] = []
+        current_speaker = words[0].get("speaker", 0)
+        chunk_start = float(words[0].get("start", 0.0))
+        chunk_end = float(words[0].get("end", 0.0))
+        chunk_words: list[str] = [
+            words[0].get("punctuated_word", words[0].get("word", ""))
+        ]
+
+        for word in words[1:]:
+            speaker = word.get("speaker", current_speaker)
+            if speaker != current_speaker:
+                segments.append(
+                    {
+                        "speaker": f"Speaker {current_speaker}",
+                        "start_time": chunk_start,
+                        "end_time": chunk_end,
+                        "text": " ".join(chunk_words),
+                    }
+                )
+                current_speaker = speaker
+                chunk_start = float(word.get("start", chunk_end))
+                chunk_words = []
+
+            chunk_words.append(word.get("punctuated_word", word.get("word", "")))
+            chunk_end = float(word.get("end", chunk_end))
+
+        segments.append(
+            {
+                "speaker": f"Speaker {current_speaker}",
+                "start_time": chunk_start,
+                "end_time": chunk_end,
+                "text": " ".join(chunk_words),
+            }
+        )
+        return segments
 
     def _normalise_assemblyai(self, raw: dict[str, Any]) -> TranscriptResult:
         """Normalise an AssemblyAI utterances response."""

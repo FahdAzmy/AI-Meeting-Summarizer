@@ -276,6 +276,24 @@ class TestStoreToDatabaseUS1:
         await storage._store_to_database(meeting, MOCK_REPORT, transcript_0s)
         assert meeting.duration_minutes == 0
 
+    async def test_characterization_missing_report_fields_preserve_defaults(self) -> None:
+        """Missing optional payload keys must map to the existing defaults."""
+        from src.models.meeting import MeetingStatus
+
+        storage = OutputStorage(config=_make_stub_config())
+        meeting = _make_mock_meeting()
+
+        await storage._store_to_database(meeting, {}, {})
+
+        assert meeting.summary is None
+        assert meeting.action_items == []
+        assert meeting.decisions == []
+        assert meeting.follow_up == []
+        assert meeting.transcript is None
+        assert meeting.speaker_stats is None
+        assert meeting.status == MeetingStatus.COMPLETED
+        assert meeting.duration_minutes == 0
+
     # --- T007: error propagation ---
 
     async def test_t007_beanie_failure_raises_database_write_error(self) -> None:
@@ -317,6 +335,35 @@ class TestSendEmailUS2:
         assert mock_send.await_count == len(recipients)
         assert set(result["sent"]) == set(recipients)
         assert result["failed"] == []
+
+    async def test_characterization_smtp_call_uses_configured_transport_args(self) -> None:
+        """SMTP send arguments are part of the current email-delivery contract."""
+        storage = OutputStorage(
+            config=_make_stub_config(
+                EMAIL_SENDER="sender@test.com",
+                EMAIL_PASSWORD="secret",
+                EMAIL_SMTP_HOST="smtp.test.com",
+                EMAIL_SMTP_PORT=2525,
+            )
+        )
+
+        with patch("modules.output_storage.aiosmtplib.send", new_callable=AsyncMock) as mock_send:
+            await storage.send_email(["alice@example.com"], MOCK_REPORT)
+
+        message = mock_send.await_args.args[0]
+        kwargs = mock_send.await_args.kwargs
+
+        assert message["Subject"] == "Your Meeting Summary \u2013 AI Meeting Summarizer"
+        assert message["From"] == "sender@test.com"
+        assert message["To"] == "alice@example.com"
+        assert kwargs == {
+            "hostname": "smtp.test.com",
+            "port": 2525,
+            "username": "sender@test.com",
+            "password": "secret",
+            "start_tls": True,
+            "recipients": ["alice@example.com"],
+        }
 
     async def test_t010_send_returns_sent_list(self) -> None:
         """T010: Successful recipients must appear in result['sent']."""
@@ -429,3 +476,34 @@ class TestStoreOrchestratorUS1US3:
 
         with pytest.raises(DatabaseWriteError):
             await storage.store(_make_mock_meeting(), MOCK_REPORT, MOCK_TRANSCRIPT)
+
+
+# ---------------------------------------------------------------------------
+# Characterization: HTML rendering contract
+# ---------------------------------------------------------------------------
+
+class TestEmailRenderingCharacterization:
+    """Lock key HTML fragments so renderer extraction remains behavior-preserving."""
+
+    async def test_full_report_renders_existing_dynamic_sections(self) -> None:
+        storage = OutputStorage(config=_make_stub_config())
+
+        html = await storage._format_email_body(MOCK_REPORT)
+
+        assert "## Meeting Summary\n\nTeam agreed on sprint goals." in html
+        assert "<li>Sprint goals confirmed</li>" in html
+        assert "<td style=\"padding:6px 12px;border-bottom:1px solid #e5e7eb\">Alice</td>" in html
+        assert "<li>Schedule retro</li>" in html
+        assert "Speaker Highlights" in html
+        assert "Most active: <strong>Alice</strong>" in html
+
+    async def test_empty_report_renders_existing_fallback_fragments(self) -> None:
+        storage = OutputStorage(config=_make_stub_config())
+
+        html = await storage._format_email_body({})
+
+        assert "No summary available." in html
+        assert "<p><em>No decisions recorded.</em></p>" in html
+        assert "<p><em>No action items recorded.</em></p>" in html
+        assert "<h3 style=\"color:#374151;margin-top:28px\">&#128260; Follow-up Items</h3>" not in html
+        assert "<h3 style=\"color:#374151;margin-top:28px\">&#127897; Speaker Highlights</h3>" not in html
