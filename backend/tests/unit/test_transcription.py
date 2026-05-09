@@ -155,6 +155,37 @@ class TestTranscribeWhisper:
         assert raw["text"] == "Hello world."
         assert isinstance(raw["segments"], list)
 
+    @patch("modules.transcription.openai")
+    def test_characterization_whisper_includes_language_when_configured(
+        self, mock_openai: MagicMock
+    ) -> None:
+        bot = Transcription(provider="whisper", language_code="ar")
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = self._make_sdk_response()
+
+        with patch("builtins.open", MagicMock()):
+            bot._transcribe_whisper(DUMMY_AUDIO)
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert kwargs["language"] == "ar"
+        assert kwargs["model"] == "whisper-1"
+
+    @patch("modules.transcription.openai")
+    def test_characterization_whisper_omits_language_when_auto_detect(
+        self, mock_openai: MagicMock
+    ) -> None:
+        bot = Transcription(provider="whisper", language_code=None)
+        mock_client = MagicMock()
+        mock_openai.OpenAI.return_value = mock_client
+        mock_client.audio.transcriptions.create.return_value = self._make_sdk_response()
+
+        with patch("builtins.open", MagicMock()):
+            bot._transcribe_whisper(DUMMY_AUDIO)
+
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in kwargs
+
     @patch("modules.transcription.openai.OpenAI")
     def test_whisper_408_raises_timeout(self, mock_openai_cls: MagicMock, whisper_bot: Transcription) -> None:
         """HTTP 408 from Whisper raises STTTimeoutError."""
@@ -224,6 +255,43 @@ class TestTranscribeDeepgram:
         # Verify diarize=true is in the URL
         call_url = mock_post.call_args[0][0]
         assert "diarize=true" in call_url
+
+    @patch("modules.transcription.requests.post")
+    def test_characterization_deepgram_forces_language_when_configured(
+        self, mock_post: MagicMock, deepgram_bot: Transcription
+    ) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = dict(DEEPGRAM_RAW)
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        with patch("builtins.open", MagicMock()):
+            deepgram_bot._transcribe_deepgram(DUMMY_AUDIO)
+
+        call_url = mock_post.call_args.args[0]
+        headers = mock_post.call_args.kwargs["headers"]
+        assert "language=en" in call_url
+        assert "detect_language=true" not in call_url
+        assert headers["Content-Type"] == "audio/wav"
+
+    @patch("modules.transcription.requests.post")
+    def test_characterization_deepgram_detects_language_when_unset(
+        self, mock_post: MagicMock
+    ) -> None:
+        bot = Transcription(provider="deepgram", language_code=None)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = dict(DEEPGRAM_RAW)
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        with patch("builtins.open", MagicMock()):
+            bot._transcribe_deepgram("meeting.unknownext")
+
+        call_url = mock_post.call_args.args[0]
+        headers = mock_post.call_args.kwargs["headers"]
+        assert "detect_language=true" in call_url
+        assert "&language=" not in call_url
+        assert headers["Content-Type"] == "audio/wav"
 
     @patch("modules.transcription.requests.post")
     def test_deepgram_408_raises_timeout(self, mock_post: MagicMock, deepgram_bot: Transcription) -> None:
@@ -307,6 +375,28 @@ class TestTranscribeAssemblyAI:
         with pytest.raises(STTProviderError, match="Audio format unsupported"):
             assemblyai_bot._transcribe_assemblyai(DUMMY_AUDIO)
 
+    @patch("modules.transcription.aai")
+    def test_characterization_assemblyai_uses_language_detection_when_language_unset(
+        self, mock_aai: MagicMock
+    ) -> None:
+        bot = Transcription(provider="assemblyai", language_code=None)
+        mock_transcript = MagicMock()
+        mock_transcript.status = MagicMock()
+        mock_transcript.status.__eq__ = lambda s, o: False
+        mock_transcript.text = ""
+        mock_transcript.utterances = []
+        mock_transcript.language_code = "en"
+        mock_transcript.audio_duration = 0.0
+        mock_aai.Transcriber.return_value.transcribe.return_value = mock_transcript
+
+        bot._transcribe_assemblyai(DUMMY_AUDIO)
+
+        config_kwargs = mock_aai.TranscriptionConfig.call_args.kwargs
+        assert config_kwargs["speaker_labels"] is True
+        assert config_kwargs["speech_models"] == ["universal-2"]
+        assert config_kwargs["language_detection"] is True
+        assert "language_code" not in config_kwargs
+
 
 # ---------------------------------------------------------------------------
 # T009 – _normalise for all three provider payloads
@@ -373,6 +463,88 @@ class TestNormalise:
         bad_raw = {"_provider": "deepgram", "metadata": {}}
         with pytest.raises(NormalisationError):
             deepgram_bot._normalise(bad_raw)
+
+    def test_characterization_unknown_provider_key_raises_normalisation_error(
+        self, whisper_bot: Transcription
+    ) -> None:
+        with pytest.raises(NormalisationError, match="Unknown provider key"):
+            whisper_bot._normalise({"_provider": "unknown"})
+
+    def test_characterization_whisper_segment_object_values_are_stripped(
+        self, whisper_bot: Transcription
+    ) -> None:
+        segment = MagicMock()
+        segment.start = 1
+        segment.end = 2
+        segment.text = "  padded text  "
+
+        result = whisper_bot._normalise_whisper(
+            {
+                "_provider": "whisper",
+                "text": "raw",
+                "segments": [segment],
+            }
+        )
+
+        assert result["segments"][0] == {
+            "speaker": None,
+            "start_time": 1.0,
+            "end_time": 2.0,
+            "text": "padded text",
+        }
+
+    def test_characterization_deepgram_words_without_punctuated_word_use_word(
+        self, deepgram_bot: Transcription
+    ) -> None:
+        words = [
+            {"word": "hello", "start": 0.0, "end": 0.5, "speaker": 0},
+            {"word": "world", "start": 0.5, "end": 1.0, "speaker": 0},
+        ]
+
+        result = deepgram_bot._group_words_by_speaker(words)
+
+        assert result == [
+            {
+                "speaker": "Speaker 0",
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "text": "hello world",
+            }
+        ]
+
+
+class TestLifecycleCharacterization:
+    """Lock client caching and cleanup behavior."""
+
+    @patch("modules.transcription.openai.OpenAI")
+    def test_get_whisper_client_reuses_existing_client(
+        self, mock_openai_cls: MagicMock, whisper_bot: Transcription
+    ) -> None:
+        first = whisper_bot._get_whisper_client()
+        second = whisper_bot._get_whisper_client()
+
+        assert first is second
+        mock_openai_cls.assert_called_once_with(api_key=whisper_bot.api_keys["whisper"])
+
+    def test_close_calls_whisper_client_close_and_clears_reference(
+        self, whisper_bot: Transcription
+    ) -> None:
+        client = MagicMock()
+        whisper_bot._whisper_client = client
+
+        whisper_bot.close()
+
+        client.close.assert_called_once()
+        assert whisper_bot._whisper_client is None
+
+    def test_context_manager_returns_self_and_closes_on_exit(
+        self, whisper_bot: Transcription
+    ) -> None:
+        with patch.object(whisper_bot, "close") as mock_close:
+            with whisper_bot as active:
+                assert active is whisper_bot
+
+        mock_close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
