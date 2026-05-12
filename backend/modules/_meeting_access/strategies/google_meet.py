@@ -31,9 +31,51 @@ class GoogleMeetStrategy:
                 logger.info("[Google Meet] Attempt %d/%d - navigating to %s", attempt, bot.retry_limit, link)
                 bot.driver.get(link)
 
-                wait = bot._wait(20)
+                # ── Step 1: Wait for page to fully load ──────────────────
+                # The Google Meet pre-join page can take a long time to
+                # render all its elements. We wait up to 60s for either
+                # the name field or a join button to appear, whichever
+                # comes first. This ensures the page is ready before we
+                # interact with anything.
+                logger.info("[Google Meet] Waiting for pre-join page to fully load...")
+                page_ready = False
+                page_indicators = [
+                    (By.XPATH, "//input[@placeholder='Your name']"),
+                    (By.XPATH, "//input[@aria-label='Your name']"),
+                    (By.CSS_SELECTOR, sel.get("name_field", "")),
+                    (By.XPATH, "//button[contains(., 'Ask to join')]"),
+                    (By.XPATH, "//button[contains(., 'Join now')]"),
+                ]
+                for by, selector in page_indicators:
+                    if not selector:
+                        continue
+                    try:
+                        bot._wait(60).until(EC.presence_of_element_located((by, selector)))
+                        logger.info("[Google Meet] Page loaded — detected element via %s='%s'.", by, selector)
+                        page_ready = True
+                        break
+                    except TimeoutException:
+                        continue
+
+                if not page_ready:
+                    raise TimeoutException("Pre-join page did not load within 60 seconds.")
+
+                # Small extra pause to let remaining UI elements render
+                bot._sleep(2)
+
+                # Dismiss any popup dialogs (cookie consent, etc.)
+                wait = bot._wait(10)
                 bot._safe_click(wait, sel.get("dismiss_dialog", ""), By.CSS_SELECTOR)
 
+                # ── Step 2: Mute mic and camera FIRST ────────────────────
+                logger.info("[Google Meet] Muting microphone and camera...")
+                bot._safe_click(wait, sel.get("mute_mic", ""), By.CSS_SELECTOR)
+                bot._sleep(0.5)
+                bot._safe_click(wait, sel.get("mute_cam", ""), By.CSS_SELECTOR)
+                bot._sleep(0.5)
+                logger.info("[Google Meet] Mic and camera muted.")
+
+                # ── Step 3: Enter bot name ───────────────────────────────
                 name_entered = False
                 name_strategies = [
                     (By.CSS_SELECTOR, sel.get("name_field", "")),
@@ -46,7 +88,7 @@ class GoogleMeetStrategy:
                     if not selector:
                         continue
                     try:
-                        name_field = bot._wait(5).until(EC.presence_of_element_located((by, selector)))
+                        name_field = bot._wait(10).until(EC.presence_of_element_located((by, selector)))
                         name_field.clear()
                         name_field.send_keys(bot.BOT_NAME)
                         name_entered = True
@@ -59,9 +101,9 @@ class GoogleMeetStrategy:
                     logger.debug("[Google Meet] No name field found - likely signed in.")
 
                 bot._sleep(1)
-                bot._safe_click(wait, sel.get("mute_mic", ""), By.CSS_SELECTOR)
-                bot._safe_click(wait, sel.get("mute_cam", ""), By.CSS_SELECTOR)
 
+                # ── Step 4: Click join button ────────────────────────────
+                logger.info("[Google Meet] Looking for join button...")
                 joined = False
                 join_strategies = [
                     (By.XPATH, "//button[.//span[text()='Ask to join']]"),
@@ -75,7 +117,7 @@ class GoogleMeetStrategy:
                     if not selector:
                         continue
                     try:
-                        join_btn = bot._wait(5).until(EC.element_to_be_clickable((by, selector)))
+                        join_btn = bot._wait(10).until(EC.element_to_be_clickable((by, selector)))
                         join_btn.click()
                         logger.info("[Google Meet] Clicked join via %s='%s' on attempt %d.", by, selector, attempt)
                         joined = True
