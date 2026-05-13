@@ -127,6 +127,28 @@ def _detect_platform(link: str) -> str | None:
         return "Microsoft Teams"
     return "Unknown"
 
+
+def _extract_names_from_emails(emails: list[str]) -> list[str]:
+    """Extract likely display names from email addresses (Solution 3).
+
+    Examples
+    --------
+    >>> _extract_names_from_emails(["ahmed.ali@company.com", "fahd_azmy@gmail.com"])
+    ['Ahmed Ali', 'Fahd Azmy']
+    """
+    names: list[str] = []
+    for email in emails:
+        local = email.split("@")[0]
+        # Replace common separators with spaces
+        local = local.replace(".", " ").replace("_", " ").replace("-", " ")
+        # Remove purely numeric parts (e.g. user123)
+        parts = [p for p in local.split() if not p.isdigit()]
+        if parts:
+            name = " ".join(p.capitalize() for p in parts)
+            names.append(name)
+    return names
+
+
 def _extract_audio(video_path: str) -> str:
     """Extract audio track from an OBS video recording using ffmpeg.
 
@@ -333,9 +355,15 @@ async def run_pipeline(
         logger.debug("Stage SUMMARISING | id=%s", meeting.id)
 
         summariser = Summarisation()
+        # Extract participant name hints from email list (Solution 3)
+        name_hints = _extract_names_from_emails(emails) if emails else None
+        if name_hints:
+            logger.info(
+                "Participant hints from emails: %s", ", ".join(name_hints)
+            )
         # generate_report() is synchronous (blocking LLM API) — run in thread
         report: dict[str, Any] = await asyncio.to_thread(
-            summariser.generate_report, transcript
+            summariser.generate_report, transcript, participant_hints=name_hints
         )
 
         # ── Stage 5: Deliver / store ────────────────────────────────────────

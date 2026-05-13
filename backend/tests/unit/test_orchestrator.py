@@ -298,8 +298,10 @@ async def test_transcript_flows_into_summarisation(patch_pipeline) -> None:
     await run_pipeline(MEETING_LINK, EMAILS, STORAGE)
 
     # generate_report is called synchronously via asyncio.to_thread — use assert_called_once_with
+    # The orchestrator now extracts participant hints from emails (Solution 3):
+    # ["alice@example.com", "bob@example.com"] → ["Alice", "Bob"]
     patch_pipeline.summ_instance.generate_report.assert_called_once_with(
-        FAKE_TRANSCRIPT
+        FAKE_TRANSCRIPT, participant_hints=["Alice", "Bob"]
     )
 
 

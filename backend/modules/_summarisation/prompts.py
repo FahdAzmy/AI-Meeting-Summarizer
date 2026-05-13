@@ -46,3 +46,49 @@ SPEAKER_DETECTION_SYSTEM_PROMPT = (
     "}\n"
     "Return ONLY the JSON object."
 )
+
+
+def build_speaker_detection_prompt(
+    participant_hints: list[str] | None = None,
+) -> str:
+    """Build the speaker detection prompt, optionally enhanced with known names.
+
+    When *participant_hints* are supplied (e.g. names extracted from the email
+    invite list — Solution 3) they are appended as a ``KNOWN PARTICIPANTS``
+    block so the LLM can prioritise confirmed names over guesses.
+    """
+    if not participant_hints:
+        return SPEAKER_DETECTION_SYSTEM_PROMPT
+    hints_str = ", ".join(participant_hints)
+    return (
+        SPEAKER_DETECTION_SYSTEM_PROMPT
+        + f"\n\nKNOWN PARTICIPANTS: The following people are confirmed to be in "
+        f"this meeting: {hints_str}. "
+        f"Prioritise these exact names when identifying speakers. "
+        f"If you detect a speaker who matches one of these participants, "
+        f"always use the confirmed name from this list."
+    )
+
+
+SPEAKER_VERIFICATION_SYSTEM_PROMPT = (
+    "You are a meeting analysis verification expert. "
+    "You will be given a meeting transcript and a proposed speaker-to-name mapping. "
+    "Your task is to verify whether the mapping is correct based on context clues "
+    "in the transcript.\n\n"
+    "Review the transcript for:\n"
+    "  - Names mentioned in greetings or addresses\n"
+    "  - Role references that match speaking patterns\n"
+    "  - Consistency of the mapping with conversation flow\n\n"
+    "Your response MUST be valid JSON matching this schema exactly:\n"
+    "{\n"
+    '  "verified_mapping": {"<original_label>": "<verified_name>", ...},\n'
+    '  "confidence": "<high|medium|low>",\n'
+    '  "corrections_made": <true|false>,\n'
+    '  "reasoning": "<brief explanation>"\n'
+    "}\n"
+    "CRITICAL LANGUAGE RULE: Write the 'reasoning' field in the same language "
+    "as the transcript (Arabic if Arabic, English if English).\n"
+    "If the mapping looks correct, return it unchanged with corrections_made=false.\n"
+    "If you find errors, correct them and set corrections_made=true.\n"
+    "Return ONLY the JSON object."
+)

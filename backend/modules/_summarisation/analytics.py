@@ -55,3 +55,59 @@ def analyse_participation(
     if detection_method is not None:
         result["detection_method"] = detection_method
     return result
+
+
+def merge_speaker_names(
+    speaker_stats: dict[str, Any] | None,
+    text_speaker_analysis: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Replace generic 'Speaker N' labels with real names via rank-based matching.
+
+    Both analytics layers produce speaker lists sorted by speaking time
+    (descending).  The speaker who talked the most in Layer 1 (STT) is
+    assumed to be the same person who talked the most in Layer 2 (LLM
+    text detection).  A ``name_mapping`` dict is attached to the result
+    so downstream verification (Solution 4) can reference the original
+    generic labels.
+    """
+    if not speaker_stats or not text_speaker_analysis:
+        return speaker_stats
+
+    stt_speakers = speaker_stats.get("speakers", [])
+    llm_speakers = text_speaker_analysis.get("speakers", [])
+
+    if not stt_speakers or not llm_speakers:
+        return speaker_stats
+
+    # Build mapping: generic label → real name (by rank order)
+    name_map: dict[str, str] = {}
+    for i, stt_spk in enumerate(stt_speakers):
+        if i < len(llm_speakers):
+            llm_name = llm_speakers[i]["speaker"]
+            stt_label = stt_spk["speaker"]
+            # Only replace if the LLM actually found a real name
+            if not llm_name.lower().startswith("speaker "):
+                name_map[stt_label] = llm_name
+
+    if not name_map:
+        return speaker_stats
+
+    # Apply mapping to speaker list
+    merged_speakers = []
+    for spk in stt_speakers:
+        new_spk = dict(spk)
+        if spk["speaker"] in name_map:
+            new_spk["speaker"] = name_map[spk["speaker"]]
+        merged_speakers.append(new_spk)
+
+    merged: dict[str, Any] = dict(speaker_stats)
+    merged["speakers"] = merged_speakers
+
+    # Update most_active_speaker label
+    old_most_active = speaker_stats.get("most_active_speaker", "")
+    if old_most_active in name_map:
+        merged["most_active_speaker"] = name_map[old_most_active]
+
+    merged["name_mapping"] = name_map
+    merged["detection_method"] = "stt_diarisation+llm_name_merge"
+    return merged

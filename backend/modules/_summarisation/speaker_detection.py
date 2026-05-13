@@ -7,7 +7,10 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from modules._summarisation.prompts import SPEAKER_DETECTION_SYSTEM_PROMPT
+from modules._summarisation.prompts import (
+    SPEAKER_DETECTION_SYSTEM_PROMPT,
+    build_speaker_detection_prompt,
+)
 from modules._summarisation.schemas import SpeakerDetectionSchema
 
 logger = logging.getLogger(__name__)
@@ -17,8 +20,17 @@ def detect_speakers_from_text(
     transcript: dict[str, Any],
     *,
     call_llm: Callable[..., str],
+    participant_hints: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Split transcript text into synthetic speaker-labelled segments."""
+    """Split transcript text into synthetic speaker-labelled segments.
+
+    Parameters
+    ----------
+    participant_hints:
+        Optional list of known participant names (e.g. extracted from email
+        addresses — Solution 3).  When provided, the LLM prompt is enhanced
+        with these names so the model prioritises confirmed identities.
+    """
     full_text = transcript.get("full_text", "")
     if not full_text.strip():
         return transcript.get("segments", [])
@@ -26,14 +38,18 @@ def detect_speakers_from_text(
     total_duration = float(transcript.get("duration_seconds", 0.0))
     user_prompt = f"Full meeting transcript:\n\n{full_text}"
 
+    # Build prompt — with participant hints if available (Solution 3)
+    system_prompt = build_speaker_detection_prompt(participant_hints)
+
     logger.info(
-        "[SM] Text speaker detection: sending full transcript to LLM (%d chars).",
+        "[SM] Text speaker detection: sending full transcript to LLM (%d chars, %d hints).",
         len(full_text),
+        len(participant_hints) if participant_hints else 0,
     )
 
     try:
         raw_content = call_llm(
-            system_prompt=SPEAKER_DETECTION_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,
             purpose="Text speaker detection",
