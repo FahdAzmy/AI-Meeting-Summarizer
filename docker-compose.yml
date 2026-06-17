@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: ./postgres/Dockerfile
+    container_name: ai_summarizer_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=ai_summarizer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  
+
+volumes:
+  postgres_data:

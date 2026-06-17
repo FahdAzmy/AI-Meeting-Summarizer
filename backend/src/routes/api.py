@@ -296,7 +296,7 @@ async def mock_history():
 async def mock_detail(id: str):
     try:
         from src.models.meeting import Meeting
-        from beanie import PydanticObjectId
+        from src.helpers.db import PydanticObjectId
 
         meeting = await Meeting.get(PydanticObjectId(id))
         if not meeting:

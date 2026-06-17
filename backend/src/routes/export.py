@@ -13,7 +13,7 @@ GET /export/meetings/{id}/pdf      — Download a single meeting as PDF
 import logging
 from datetime import datetime, timezone
 
-from beanie import PydanticObjectId
+from src.helpers.db import PydanticObjectId
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 

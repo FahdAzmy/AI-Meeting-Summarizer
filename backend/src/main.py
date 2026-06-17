@@ -70,13 +70,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database connection on startup."""
-    logger.info("Application starting — connecting to MongoDB …")
+    from src.helpers.config import settings
+    db_type = getattr(settings, "DATABASE_TYPE", "postgres").lower()
+    logger.info(f"Application starting — connecting to {db_type.capitalize()} …")
     await init_db()
     logger.info("Database connected — application is up")
     yield
-    client = get_client()
-    if client:
-        client.close()
+    if db_type == "mongodb":
+        client = get_client()
+        if client:
+            client.close()
     logger.info("Application shutting down, database connection closed")
 
 
@@ -128,10 +131,22 @@ async def health_check():
     Check if the server and database are running correctly.
     """
     try:
-        client = get_client()
-        # Execute a simple command to verify database connectivity
-        await client.admin.command('ping')
-        logger.info("Health check passed — database connected")
+        from src.helpers.config import settings
+        db_type = getattr(settings, "DATABASE_TYPE", "postgres").lower()
+        if db_type == "postgres":
+            from src.helpers.db import SessionLocal
+            from sqlalchemy import text
+            if SessionLocal is None:
+                raise RuntimeError("PostgreSQL SessionLocal is not initialized.")
+            async with SessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+            logger.info("Health check passed — PostgreSQL connected")
+        else:
+            client = get_client()
+            # Execute a simple command to verify database connectivity
+            await client.admin.command('ping')
+            logger.info("Health check passed — MongoDB connected")
+            
         return {
             "status": "online",
             "database": "connected",

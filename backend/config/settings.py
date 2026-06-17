@@ -108,6 +108,35 @@ class Config(BaseSettings):
     # ------------------------------------------------------------------
     # Storage & Distribution – Output Storage Module (OS)
     # ------------------------------------------------------------------
+    DATABASE_TYPE: str = Field(
+        default="postgres",
+        description="Database backend type to use ('postgres' or 'mongodb').",
+    )
+    POSTGRES_USER: str = Field(
+        default="postgres",
+        description="PostgreSQL username.",
+    )
+    POSTGRES_PASSWORD: str = Field(
+        default="postgres",
+        description="PostgreSQL password.",
+    )
+    POSTGRES_SERVER: str = Field(
+        default="localhost",
+        description="PostgreSQL server hostname.",
+    )
+    POSTGRES_PORT: int = Field(
+        default=5432,
+        description="PostgreSQL port.",
+    )
+    POSTGRES_DB: str = Field(
+        default="ai_summarizer",
+        description="PostgreSQL database name.",
+    )
+    DATABASE_URL: str | None = Field(
+        default=None,
+        description="Full PostgreSQL database connection URL.",
+    )
+
     MONGO_URI: str = Field(
         default="mongodb://localhost:27017",
         description=(

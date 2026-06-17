@@ -7,6 +7,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
+    DATABASE_TYPE: str = "postgres"
+
     # These will be loaded from .env if using Postgres, optional otherwise
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str | None = None
