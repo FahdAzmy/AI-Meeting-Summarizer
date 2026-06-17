@@ -1,34 +1,38 @@
-import os
-from pydantic_settings import BaseSettings
-from pathlib import Path
+"""
+src/helpers/config.py
+---------------------
+Application settings loaded from environment variables / .env file.
+PostgreSQL-only: all MongoDB settings have been removed.
+"""
 
-# Get the project root directory (backend folder)
+import os
+from pathlib import Path
+from pydantic_settings import BaseSettings
+
+# Project root == backend/
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
-    DATABASE_TYPE: str = "postgres"
-
-    # These will be loaded from .env if using Postgres, optional otherwise
+    # ── PostgreSQL ────────────────────────────────────────────────────────
     POSTGRES_USER: str | None = None
     POSTGRES_PASSWORD: str | None = None
     POSTGRES_SERVER: str | None = None
     POSTGRES_PORT: str | None = None
     POSTGRES_DB: str | None = None
 
-    # Use field name matching the key in .env if provided
+    # Full connection URL takes precedence over individual fields
     DATABASE_URL: str | None = None
     TEST_DATABASE_URL: str | None = None
 
-    # JWT
+    # ── JWT ──────────────────────────────────────────────────────────────
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_SECRET_KEY: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: int
     REFRESH_TOKEN_EXPIRE_DAYS: int
 
-    # Email
+    # ── Email ─────────────────────────────────────────────────────────────
     MAIL_USERNAME: str
     MAIL_PASSWORD: str
     MAIL_FROM: str
@@ -37,26 +41,28 @@ class Settings(BaseSettings):
     MAIL_STARTTLS: bool = True
     MAIL_SSL_TLS: bool = False
 
+    # ── CORS ─────────────────────────────────────────────────────────────
     CORS_ORIGINS: str
 
-    # MongoDB
-    MONGO_URI: str = "mongodb://localhost:27017"
-    MONGO_DB: str = "ai_summerizer"
-    MONGO_TEST_DB: str = "ai_summerizer_test"
-
     def get_database_url(self) -> str:
-        # If DATABASE_URL is provided in .env, use it (and make sure it uses asyncpg)
+        """Return the async-ready PostgreSQL connection URL."""
         if self.DATABASE_URL:
-            return self.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
-
-        # Otherwise, construct it from individual parts
-        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            return self.DATABASE_URL.replace(
+                "postgresql://", "postgresql+asyncpg://"
+            )
+        return (
+            f"postgresql+asyncpg://"
+            f"{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
     def get_test_database_url(self) -> str:
+        """Return the test database URL (required for running the test suite)."""
         if not self.TEST_DATABASE_URL:
-            raise RuntimeError("❌ TEST_DATABASE_URL is not set")
-
-        return self.TEST_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+            raise RuntimeError("TEST_DATABASE_URL is not set in the environment.")
+        return self.TEST_DATABASE_URL.replace(
+            "postgresql://", "postgresql+asyncpg://"
+        )
 
     class Config:
         env_file = os.path.join(BASE_DIR, ".env")

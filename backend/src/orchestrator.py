@@ -17,8 +17,8 @@ Pipeline sequence
   DELIVERING   →  OutputStorage.store()          (async)
   COMPLETED / FAILED  (terminal states)
 
-All database status mutations are committed immediately so the frontend
-dashboard reflects progress in real-time (<150 ms target).
+All database status mutations use short-lived SQLAlchemy async sessions so
+the database connection is never held open during long blocking operations.
 
 Testability design
 ------------------
@@ -45,6 +45,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -54,10 +55,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Dependency resolution — real packages with lightweight sentinel fallback
 # ---------------------------------------------------------------------------
-# Each block tries the real import first.  If the package is not installed
-# (e.g. in a minimal test environment) it installs a sentinel class whose
-# constructor raises RuntimeError.  Tests patch these names *before* calling
-# run_pipeline so the sentinel is never reached in correctly-written tests.
 
 def _missing(name: str):
     """Return a sentinel class that blows up loudly if ever instantiated."""
@@ -112,6 +109,11 @@ except ImportError:  # pragma: no cover
     _parse_zoom_url = None  # type: ignore[assignment]
     _zoom_sdk_available = False
 
+# Module-level DB imports — must be at top level so tests can patch them
+from sqlalchemy import select  # noqa: E402
+from src.helpers.db import SessionLocal  # noqa: E402  (after sentinels)
+from src.models.company import Company  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -129,19 +131,11 @@ def _detect_platform(link: str) -> str | None:
 
 
 def _extract_names_from_emails(emails: list[str]) -> list[str]:
-    """Extract likely display names from email addresses (Solution 3).
-
-    Examples
-    --------
-    >>> _extract_names_from_emails(["ahmed.ali@company.com", "fahd_azmy@gmail.com"])
-    ['Ahmed Ali', 'Fahd Azmy']
-    """
+    """Extract likely display names from email addresses."""
     names: list[str] = []
     for email in emails:
         local = email.split("@")[0]
-        # Replace common separators with spaces
         local = local.replace(".", " ").replace("_", " ").replace("-", " ")
-        # Remove purely numeric parts (e.g. user123)
         parts = [p for p in local.split() if not p.isdigit()]
         if parts:
             name = " ".join(p.capitalize() for p in parts)
@@ -150,35 +144,18 @@ def _extract_names_from_emails(emails: list[str]) -> list[str]:
 
 
 def _extract_audio(video_path: str) -> str:
-    """Extract audio track from an OBS video recording using ffmpeg.
-
-    OBS only records video containers (MP4/MKV/MOV), so even a 30-second
-    meeting produces a ~28 MB file.  Extracting just the audio yields a
-    ~500 KB WAV, which uploads much faster to the STT API.
-
-    Parameters
-    ----------
-    video_path:
-        Path to the OBS video recording (e.g. ``.mp4``).
-
-    Returns
-    -------
-    str
-        Path to the extracted ``.wav`` file (same directory, ``.wav`` suffix).
-        If ffmpeg is unavailable, returns the original video path unchanged
-        (Deepgram can handle MP4 natively, just slower to upload).
-    """
+    """Extract audio track from an OBS video recording using ffmpeg."""
     audio_path = str(Path(video_path).with_suffix(".wav"))
 
     try:
         subprocess.run(
             [
-                "ffmpeg", "-y",          # overwrite without asking
-                "-i", video_path,         # input video
-                "-vn",                    # drop video stream
-                "-acodec", "pcm_s16le",   # 16-bit PCM WAV
-                "-ar", "16000",           # 16 kHz sample rate (optimal for STT)
-                "-ac", "1",               # mono
+                "ffmpeg", "-y",
+                "-i", video_path,
+                "-vn",
+                "-acodec", "pcm_s16le",
+                "-ar", "16000",
+                "-ac", "1",
                 audio_path,
             ],
             check=True,
@@ -207,6 +184,44 @@ def _extract_audio(video_path: str) -> str:
         return video_path
 
 
+async def _get_or_create_default_company(db) -> Any:
+    """Return the first Company row, creating a default one if none exist."""
+
+    result = await db.execute(select(Company).limit(1))
+    company = result.scalar_one_or_none()
+    if company is None:
+        company = Company(name="Default Company", subscription_plan="free")
+        db.add(company)
+        await db.commit()
+        await db.refresh(company)
+        logger.info("Created default company id=%s", company.id)
+    return company
+
+
+async def _update_meeting_status(
+    meeting_id: uuid.UUID,
+    status: Any,
+    error_message: str | None = None,
+    **extra_fields: Any,
+) -> None:
+    """Open a short-lived session to update a meeting's status and optional fields."""
+
+    async with SessionLocal() as db:
+        result = await db.execute(
+            select(Meeting).where(Meeting.id == meeting_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            logger.warning("_update_meeting_status: meeting %s not found", meeting_id)
+            return
+        row.status = status
+        if error_message is not None:
+            row.error_message = error_message
+        for field, value in extra_fields.items():
+            setattr(row, field, value)
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -218,211 +233,172 @@ async def run_pipeline(
     storage: str,
     session_id: str | None = None,
 ) -> None:
-    """Orchestrate the full AI meeting-summariser pipeline.
+    """Orchestrate the full AI meeting-summariser pipeline."""
 
-    Parameters
-    ----------
-    meeting_link:
-        URL of the meeting room to join (Zoom, Google Meet, Teams, …).
-    emails:
-        List of recipient e-mail addresses for the final report.
-    storage:
-        Storage backend identifier (``"email"``, ``"sheets"``, ``"db"``).
-        Passed unchanged to :class:`OutputStorage`.
-
-    Notes
-    -----
-    * Blocking I/O calls (``join`` / ``start``) are offloaded to a thread
-      pool via :func:`asyncio.to_thread` to prevent stalling the event loop.
-    * Any unhandled exception causes the meeting document to be marked
-      ``FAILED`` and is logged at ERROR level — it is *not* re-raised so
-      the FastAPI worker stays healthy.
-    """
-    # ── Create & persist initial meeting record ─────────────────────────────
+    # ── Create & persist initial meeting record ──────────────────────────
     platform_name = _detect_platform(meeting_link)
-    meeting: Any = Meeting(meeting_link=meeting_link, session_id=session_id, platform=platform_name)
-    await meeting.insert()
-
-    logger.info("Pipeline started | link=%s | storage=%s", meeting_link, storage)
+    meeting_id: uuid.UUID | None = None
 
     try:
-        # ── Stage 1: Join meeting ───────────────────────────────────────────
-        meeting.status = MeetingStatus.JOINING
-        await meeting.save()
-        logger.debug("Stage JOINING | id=%s", meeting.id)
+        async with SessionLocal() as db:
+            company = await _get_or_create_default_company(db)
+            new_meeting = Meeting(
+                meeting_link=meeting_link,
+                session_id=session_id,
+                platform=platform_name,
+                company_id=company.id,
+                status=MeetingStatus.PROCESSING,
+            )
+            db.add(new_meeting)
+            await db.commit()
+            await db.refresh(new_meeting)
+            meeting_id = new_meeting.id
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Pipeline FAILED to initialise DB record | link=%s | error=%s",
+            meeting_link, exc,
+        )
+        return
 
-        # ── Zoom Meeting SDK routing (T017 / US4) ───────────────────────────
-        # Determine whether to use the Zoom Meeting SDK or fall back to the
-        # existing Selenium-based MeetingAccess module.
-        #
-        # SDK path:      Zoom URL  +  both credentials configured
-        # Selenium path: any other platform  OR  credentials missing (T018)
+    logger.info("Pipeline started | id=%s | link=%s | storage=%s", meeting_id, meeting_link, storage)
+
+    # Keep a lightweight proxy object so the OutputStorage interface (which
+    # expects a meeting object with an .id attribute) works without changes.
+    class _MeetingProxy:
+        def __init__(self, mid: uuid.UUID) -> None:
+            self.id = mid
+
+    meeting_proxy = _MeetingProxy(meeting_id)
+
+    try:
+        # ── Stage 1: Join meeting ─────────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.JOINING)
+        logger.debug("Stage JOINING | id=%s", meeting_id)
+
+        # ── Zoom Meeting SDK routing ──────────────────────────────────────
         _use_zoom_sdk = False
         if _zoom_sdk_available and _parse_zoom_url is not None:
             _zoom_details = _parse_zoom_url(meeting_link)
             if _zoom_details:
-                # It is a Zoom link — check credentials
                 _cfg = _Config()
                 if _cfg.ZOOM_SDK_CLIENT_ID and _cfg.ZOOM_SDK_CLIENT_SECRET:
                     _use_zoom_sdk = True
                 else:
                     logger.warning(
-                        "Zoom URL detected but ZOOM_SDK_CLIENT_ID / "
-                        "ZOOM_SDK_CLIENT_SECRET not configured — "
+                        "Zoom URL detected but SDK credentials not configured — "
                         "falling back to Selenium for meeting id=%s",
-                        meeting.id,
+                        meeting_id,
                     )
 
         if _use_zoom_sdk:
-            # SDK path: the frontend background page (/zoom-meeting) handles
-            # joining.  The orchestrator opens it via the MeetingAccess module
-            # using a special Zoom-SDK URL instead of the raw meeting link.
             import urllib.parse as _urlparse
             _sdk_page_url = (
                 "http://localhost:3000/zoom-meeting"
                 f"?link={_urlparse.quote(meeting_link, safe='')}"
-                f"&meeting_id={meeting.id}"
+                f"&meeting_id={meeting_id}"
             )
-            logger.info(
-                "Stage JOINING via Zoom SDK | id=%s | sdk_page=%s",
-                meeting.id,
-                _sdk_page_url,
-            )
+            logger.info("Stage JOINING via Zoom SDK | id=%s | sdk_page=%s", meeting_id, _sdk_page_url)
             access = MeetingAccess()
             await asyncio.to_thread(access.join, _sdk_page_url)
         else:
-            # Selenium path: original implementation (Google Meet, Teams, or
-            # Zoom without SDK credentials configured).
-            logger.info(
-                "Stage JOINING via Selenium | id=%s | link=%s",
-                meeting.id,
-                meeting_link,
-            )
+            logger.info("Stage JOINING via Selenium | id=%s | link=%s", meeting_id, meeting_link)
             access = MeetingAccess()
             await asyncio.to_thread(access.join, meeting_link)
 
-        # ── Stage 2: Start recording (right after clicking "Join now") ─────
-        # join() returns immediately after clicking "Join now".
-        # OBS starts recording here so we capture audio from this point.
-        meeting.status = MeetingStatus.RECORDING
-        await meeting.save()
-        logger.debug("Stage RECORDING | id=%s", meeting.id)
+        # ── Stage 2: Start recording ──────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.RECORDING)
+        logger.debug("Stage RECORDING | id=%s", meeting_id)
 
         capture = AudioCapture()
         await asyncio.to_thread(capture.start)
-
-        # Wait for lobby admission (if any) + meeting to end
-
         await asyncio.to_thread(access.wait_until_end)
 
-        # Stop OBS recording — handle errors gracefully
         try:
             raw_recording: str = await asyncio.to_thread(capture.stop)
         except Exception as stop_exc:
-            logger.warning(
-                "OBS stop failed (%s) — attempting to find latest recording.",
-                stop_exc,
-            )
-            # Try to find an existing recording file as fallback
-            raw_recording = await asyncio.to_thread(
-                capture._find_latest_recording
-            )
+            logger.warning("OBS stop failed (%s) — trying to find latest recording.", stop_exc)
+            raw_recording = await asyncio.to_thread(capture._find_latest_recording)
             if not raw_recording:
-                raise  # re-raise original error if no file found
+                raise
 
-        # Leave the meeting room and release browser resources
         await asyncio.to_thread(access.leave)
-
-        # Extract audio from the OBS video container (MP4 → WAV)
-        # This reduces file size from ~28 MB to ~500 KB.
         audio_path: str = await asyncio.to_thread(_extract_audio, raw_recording)
 
-        # ── Stage 3: Transcribe ─────────────────────────────────────────────
-        meeting.status = MeetingStatus.TRANSCRIBING
-        await meeting.save()
-        logger.debug("Stage TRANSCRIBING | id=%s", meeting.id)
+        # ── Stage 3: Transcribe ───────────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.TRANSCRIBING)
+        logger.debug("Stage TRANSCRIBING | id=%s", meeting_id)
 
         _cfg = _Config()
         transcriber = Transcription(provider=_cfg.STT_PROVIDER)
-        # transcribe() is synchronous (blocking network I/O) — run in thread
-        transcript: dict[str, Any] = await asyncio.to_thread(
-            transcriber.transcribe, audio_path
-        )
+        transcript: dict[str, Any] = await asyncio.to_thread(transcriber.transcribe, audio_path)
 
-        # ── Stage 4: Summarise ──────────────────────────────────────────────
-        meeting.status = MeetingStatus.SUMMARISING
-        await meeting.save()
-        logger.debug("Stage SUMMARISING | id=%s", meeting.id)
+        # ── Stage 4: Summarise ────────────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.SUMMARISING)
+        logger.debug("Stage SUMMARISING | id=%s", meeting_id)
 
         summariser = Summarisation()
-        # Extract participant name hints from email list (Solution 3)
         name_hints = _extract_names_from_emails(emails) if emails else None
         if name_hints:
-            logger.info(
-                "Participant hints from emails: %s", ", ".join(name_hints)
-            )
-        # generate_report() is synchronous (blocking LLM API) — run in thread
+            logger.info("Participant hints from emails: %s", ", ".join(name_hints))
         report: dict[str, Any] = await asyncio.to_thread(
             summariser.generate_report, transcript, participant_hints=name_hints
         )
 
-        # ── Stage 5: Deliver / store ────────────────────────────────────────
-        meeting.status = MeetingStatus.DELIVERING
-        await meeting.save()
-        logger.debug("Stage DELIVERING | id=%s", meeting.id)
+        # ── Stage 5: Deliver / store ──────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.DELIVERING)
+        logger.debug("Stage DELIVERING | id=%s", meeting_id)
 
-        # Map the frontend storage value to OutputStorage backend
         backend_map = {"email": "database", "db": "database"}
         backend = backend_map.get(storage, "database")
 
         output = OutputStorage(backend=backend)
-        await output.store(meeting, report, transcript)
+        # OutputStorage.store() now uses SessionLocal internally via database.py
+        await output.store(meeting_proxy, report, transcript)
 
-        # Send email report if recipients were provided
         if emails:
             await output.send_email(recipients=emails, report=report)
 
-        # ── Terminal: success ───────────────────────────────────────────────
-        meeting.status = MeetingStatus.COMPLETED
-        await meeting.save()
-        logger.info("Pipeline COMPLETED | id=%s", meeting.id)
+        # ── Terminal: success ─────────────────────────────────────────────
+        await _update_meeting_status(meeting_id, MeetingStatus.COMPLETED)
+        logger.info("Pipeline COMPLETED | id=%s", meeting_id)
 
     except Exception as exc:  # noqa: BLE001
-        # Map technical exceptions to human-readable error messages for the frontend
         error_msg = "An unexpected error occurred during processing."
         exc_str = str(exc).lower()
         exc_type = type(exc).__name__.lower()
-        
+
+        # Fetch current status for better error message context
+        current_status: Any = None
+        try:
+            async with SessionLocal() as db:
+                result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
+                row = result.scalar_one_or_none()
+                if row:
+                    current_status = row.status
+        except Exception:
+            pass
+
         if "timeout" in exc_str or "timeout" in exc_type:
-            if meeting.status == MeetingStatus.JOINING:
+            if current_status == MeetingStatus.JOINING:
                 error_msg = "We couldn't join the meeting. The link might be invalid, or the host didn't let us in."
-            elif meeting.status == MeetingStatus.TRANSCRIBING:
-                error_msg = "The transcription service took too long to respond. The meeting might be too long."
+            elif current_status == MeetingStatus.TRANSCRIBING:
+                error_msg = "The transcription service took too long to respond."
             else:
                 error_msg = "A network timeout occurred while processing your meeting."
         elif "stt" in exc_type:
-             error_msg = "The transcription service failed to process the audio."
+            error_msg = "The transcription service failed to process the audio."
         elif "obs" in exc_str or "websocket" in exc_str:
-             error_msg = "There was a problem recording the audio. The recording engine might be offline."
-        elif meeting.status == MeetingStatus.SUMMARISING:
-             error_msg = "The AI failed to generate a summary for this meeting."
-        elif meeting.status == MeetingStatus.DELIVERING:
-             error_msg = "The summary was created, but we couldn't send the emails."
+            error_msg = "There was a problem recording the audio. The recording engine might be offline."
+        elif current_status == MeetingStatus.SUMMARISING:
+            error_msg = "The AI failed to generate a summary for this meeting."
+        elif current_status == MeetingStatus.DELIVERING:
+            error_msg = "The summary was created, but we couldn't send the emails."
 
-        # Mark the meeting as failed so the dashboard can surface the error.
-        # Nothing escapes to the FastAPI worker — the server must stay alive.
-        logger.exception(
-            "Pipeline FAILED | id=%s | link=%s",
-            getattr(meeting, "id", "unknown"),
-            meeting_link,
-        )
+        logger.exception("Pipeline FAILED | id=%s | link=%s", meeting_id, meeting_link)
+
         try:
-            meeting.status = MeetingStatus.FAILED
-            meeting.error_message = error_msg
-            await meeting.save()
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Could not persist FAILED status | id=%s",
-                getattr(meeting, "id", "unknown"),
+            await _update_meeting_status(
+                meeting_id, MeetingStatus.FAILED, error_message=error_msg
             )
-
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not persist FAILED status | id=%s", meeting_id)

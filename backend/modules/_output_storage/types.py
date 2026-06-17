@@ -55,11 +55,10 @@ class OutputStorageConfig(Protocol):
     EMAIL_PASSWORD: str
     EMAIL_SMTP_HOST: str
     EMAIL_SMTP_PORT: int
-    MONGO_URI: str
-    MONGO_DB: str
 
 
 class SaveableMeeting(Protocol):
+    """Protocol satisfied by any SQLAlchemy Meeting instance."""
     id: Any
     summary: str | None
     action_items: list[dict[str, Any]]
@@ -68,7 +67,4 @@ class SaveableMeeting(Protocol):
     transcript: str | None
     speaker_stats: dict[str, Any] | None
     status: MeetingStatus
-    duration_minutes: int
-
-    async def save(self) -> None:
-        """Persist the meeting document."""
+    duration_minutes: int | None

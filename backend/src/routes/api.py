@@ -8,21 +8,24 @@ Endpoints
 POST /trigger  — Launch the full AI pipeline as a background task (T016/T017).
 POST /join     — Legacy endpoint for direct bot lifecycle management.
 GET  /status   — Poll in-memory session status (legacy).
-GET  /meetings — Meeting history placeholder.
+GET  /meetings — Meeting history.
 """
 
 import time
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional
+import uuid
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from pydantic import BaseModel, Field
 import threading
 from datetime import datetime
-import uuid
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from src.models.requests import JoinMeetingRequest, JoinMeetingResponse, StatusResponse
+from src.helpers.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +38,7 @@ api_router = APIRouter()
 
 
 class TriggerRequest(BaseModel):
-    """Request body for the ``POST /trigger`` endpoint.
-
-    Attributes
-    ----------
-    meeting_link:
-        URL of the meeting room to join (Zoom, Google Meet, Teams, …).
-    emails:
-        Recipient e-mail addresses for the final meeting report.
-    storage:
-        Storage backend identifier. Defaults to ``"email"``.
-    """
+    """Request body for the ``POST /trigger`` endpoint."""
 
     meeting_link: str = Field(
         ...,
@@ -77,16 +70,8 @@ async def trigger_pipeline(
     request: TriggerRequest,
     background_tasks: BackgroundTasks,
 ):
-    """Launch the full AI pipeline as a detached background task.
-
-    The endpoint returns **immediately** with HTTP 202 (Accepted) while
-    ``run_pipeline`` executes asynchronously via FastAPI's
-    ``BackgroundTasks`` mechanism.  Pipeline progress is tracked via
-    ``MeetingStatus`` mutations in MongoDB (see ``src/orchestrator.py``).
-    """
-    # Lazy import to avoid circular dependencies and to keep the module
-    # importable even when heavy AI packages are not installed.
-    from src.orchestrator import run_pipeline  # noqa: WPS433
+    """Launch the full AI pipeline as a detached background task."""
+    from src.orchestrator import run_pipeline
 
     logger.info(
         "POST /trigger | link=%s | emails=%s | storage=%s",
@@ -118,16 +103,11 @@ async def trigger_pipeline(
 # Legacy bot lifecycle (pre-orchestrator) — kept for backward compatibility
 # ---------------------------------------------------------------------------
 
-# In-memory "database" for statuses until the main Pipeline DB is connected
 status_db: Dict[str, Dict[str, Any]] = {}
 
 
 def bot_lifecycle_task(session_id: str, link: str):
-    """
-    Background worker that controls the Selenium Bot for this session.
-    It updates the global status dictionary.
-    """
-    # Lazy import — only needed when this legacy path is used
+    """Background worker that controls the Selenium Bot for this session."""
     try:
         from modules.meeting_access import MeetingAccess
         from modules.errors import MeetingJoinError, PlatformNotSupported
@@ -149,24 +129,17 @@ def bot_lifecycle_task(session_id: str, link: str):
 
     bot = None
     try:
-        # Step 1: Initialize bot
         bot = MeetingAccess(headless=True)
-
-        # Step 2: Join meeting
         bot.join(link)
 
-        # Simulated recording phase
         status_db[session_id]["status"] = "recording"
         status_db[session_id]["step"] = 2
         status_db[session_id]["message"] = (
             f"Connected to {bot.detected_platform}! Active listening mode..."
         )
 
-        # We simulate waiting for the meeting to end (it'll actually wait on the bot until max time or end)
-        # Normally this loops until the meeting ends, but for demo we just sleep
         time.sleep(15)
 
-        # We'd end the Meeting here
         status_db[session_id]["status"] = "completed"
         status_db[session_id]["step"] = 6
         status_db[session_id]["message"] = "Meeting concluded across all modules."
@@ -192,13 +165,9 @@ def bot_lifecycle_task(session_id: str, link: str):
 async def submit_meeting(
     request: JoinMeetingRequest, background_tasks: BackgroundTasks
 ):
-    """
-    Accepts a meeting link and starts the background execution.
-    """
-    # Create an identifier
+    """Accepts a meeting link and starts the background execution."""
     session_id = f"session_{uuid.uuid4().hex[:8]}"
 
-    # Run the bot synchronously in a separate OS thread to avoid locking FastAPI's async event loop
     thread = threading.Thread(
         target=bot_lifecycle_task, args=(session_id, request.meeting_link)
     )
@@ -208,19 +177,15 @@ async def submit_meeting(
 
 
 @api_router.get("/status/{session_id}", response_model=StatusResponse)
-async def get_status(session_id: str):
-    """
-    Poll the current status of the requested meeting task.
-    First checks the main database, then falls back to the legacy in-memory db.
-    If neither has data yet, return a 'pending' status (pipeline is still booting).
-    """
+async def get_status(session_id: str, db: AsyncSession = Depends(get_db)):
+    """Poll the current status of the requested meeting task."""
     try:
         from src.models.meeting import Meeting
 
-        # Attempt to find the meeting in the database
-        meeting = await Meeting.find_one(Meeting.session_id == session_id)
+        # Query using SQLAlchemy
+        result = await db.execute(select(Meeting).where(Meeting.session_id == session_id))
+        meeting = result.scalar_one_or_none()
         if meeting:
-            # Map MeetingStatus to Step
             status_val = (
                 meeting.status.value
                 if hasattr(meeting.status, "value")
@@ -259,9 +224,6 @@ async def get_status(session_id: str):
             message=record["message"],
         )
 
-    # Neither DB nor in-memory has this session yet — the background task
-    # hasn't inserted the Meeting document.  Return a "pending" status so
-    # the frontend keeps polling instead of showing an error.
     return StatusResponse(
         session_id=session_id,
         status="pending",
@@ -271,19 +233,35 @@ async def get_status(session_id: str):
     )
 
 
-# Connect /meetings history and details to the database
 @api_router.get("/meetings")
-async def mock_history():
+async def mock_history(db: AsyncSession = Depends(get_db)):
+    """Retrieve history of all meetings."""
     try:
         from src.models.meeting import Meeting
 
-        meetings = await Meeting.find_all().to_list()
+        result = await db.execute(select(Meeting))
+        meetings = result.scalars().all()
         return [
             {
-                **m.dict(exclude={"id"}),
                 "id": str(m.id),
-                "date": m.created_at.isoformat() if m.created_at else None,
+                "title": m.title,
+                "meeting_link": m.meeting_link,
+                "session_id": m.session_id,
                 "platform": m.platform,
+                "scheduled_time": m.scheduled_time.isoformat() if m.scheduled_time else None,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "date": m.created_at.isoformat() if m.created_at else None,
+                "status": m.status.value if hasattr(m.status, "value") else m.status,
+                "error_message": m.error_message,
+                "duration_minutes": m.duration_minutes,
+                "transcript": m.transcript,
+                "summary": m.summary,
+                "action_items": m.action_items,
+                "decisions": m.decisions,
+                "follow_up": m.follow_up,
+                "speaker_stats": m.speaker_stats,
+                "company_id": str(m.company_id) if m.company_id else None,
+                "created_by": str(m.created_by) if m.created_by else None,
             }
             for m in meetings
         ]
@@ -293,21 +271,44 @@ async def mock_history():
 
 
 @api_router.get("/meetings/{id}")
-async def mock_detail(id: str):
+async def mock_detail(id: str, db: AsyncSession = Depends(get_db)):
+    """Retrieve details of a specific meeting."""
     try:
         from src.models.meeting import Meeting
-        from src.helpers.db import PydanticObjectId
 
-        meeting = await Meeting.get(PydanticObjectId(id))
+        try:
+            meeting_uuid = uuid.UUID(id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+        result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+        meeting = result.scalar_one_or_none()
         if not meeting:
             raise HTTPException(status_code=404, detail="Meeting not found")
+
         return {
-            **meeting.dict(exclude={"id"}),
             "id": str(meeting.id),
-            "date": meeting.created_at.isoformat() if meeting.created_at else None,
-            "platform": meeting.platform,
             "title": meeting.title,
+            "meeting_link": meeting.meeting_link,
+            "session_id": meeting.session_id,
+            "platform": meeting.platform,
+            "scheduled_time": meeting.scheduled_time.isoformat() if meeting.scheduled_time else None,
+            "created_at": meeting.created_at.isoformat() if meeting.created_at else None,
+            "date": meeting.created_at.isoformat() if meeting.created_at else None,
+            "status": meeting.status.value if hasattr(meeting.status, "value") else meeting.status,
+            "error_message": meeting.error_message,
+            "duration_minutes": meeting.duration_minutes,
+            "transcript": meeting.transcript,
+            "summary": meeting.summary,
+            "action_items": meeting.action_items,
+            "decisions": meeting.decisions,
+            "follow_up": meeting.follow_up,
+            "speaker_stats": meeting.speaker_stats,
+            "company_id": str(meeting.company_id) if meeting.company_id else None,
+            "created_by": str(meeting.created_by) if meeting.created_by else None,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching meeting details: {e}")
         raise HTTPException(status_code=404, detail="Meeting not found")

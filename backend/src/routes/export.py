@@ -12,11 +12,14 @@ GET /export/meetings/{id}/pdf      — Download a single meeting as PDF
 
 import logging
 from datetime import datetime, timezone
+import uuid
 
-from src.helpers.db import PydanticObjectId
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
+from src.helpers.db import get_db
 from src.helpers.excel_generator import generate_all_meetings_excel, generate_single_meeting_excel
 from src.helpers.pdf_generator import generate_meeting_pdf
 from src.models.meeting import Meeting, MeetingStatus
@@ -31,11 +34,12 @@ def _safe_filename(text: str) -> str:
 
 
 @export_router.get("/meetings/excel")
-async def export_all_meetings_excel():
+async def export_all_meetings_excel(db: AsyncSession = Depends(get_db)):
     try:
-        meetings = await Meeting.find(
-            Meeting.status == MeetingStatus.COMPLETED
-        ).to_list()
+        result = await db.execute(
+            select(Meeting).where(Meeting.status == MeetingStatus.COMPLETED)
+        )
+        meetings = result.scalars().all()
     except Exception as exc:
         logger.error("Failed to query meetings for export: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to generate export. Please try again.")
@@ -60,9 +64,17 @@ async def export_all_meetings_excel():
 
 
 @export_router.get("/meetings/{id}/excel")
-async def export_single_meeting_excel(id: str):
+async def export_single_meeting_excel(id: str, db: AsyncSession = Depends(get_db)):
     try:
-        meeting = await Meeting.get(PydanticObjectId(id))
+        try:
+            meeting_uuid = uuid.UUID(id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+        result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+        meeting = result.scalar_one_or_none()
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=404, detail="Meeting not found or not yet completed.")
 
@@ -76,7 +88,7 @@ async def export_single_meeting_excel(id: str):
         raise HTTPException(status_code=500, detail="Failed to generate export. Please try again.")
 
     title = _safe_filename(meeting.title or meeting.platform or "meeting")
-    date_str = meeting.created_at.strftime("%Y-%m-%d")
+    date_str = meeting.created_at.strftime("%Y-%m-%d") if meeting.created_at else "unknown"
     filename = f"meeting_{title}_{date_str}.xlsx"
 
     return StreamingResponse(
@@ -87,9 +99,17 @@ async def export_single_meeting_excel(id: str):
 
 
 @export_router.get("/meetings/{id}/pdf")
-async def export_single_meeting_pdf(id: str):
+async def export_single_meeting_pdf(id: str, db: AsyncSession = Depends(get_db)):
     try:
-        meeting = await Meeting.get(PydanticObjectId(id))
+        try:
+            meeting_uuid = uuid.UUID(id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+        result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+        meeting = result.scalar_one_or_none()
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=404, detail="Meeting not found or not yet completed.")
 
@@ -103,7 +123,7 @@ async def export_single_meeting_pdf(id: str):
         raise HTTPException(status_code=500, detail="Failed to generate export. Please try again.")
 
     title = _safe_filename(meeting.title or meeting.platform or "meeting")
-    date_str = meeting.created_at.strftime("%Y-%m-%d")
+    date_str = meeting.created_at.strftime("%Y-%m-%d") if meeting.created_at else "unknown"
     filename = f"meeting_{title}_{date_str}.pdf"
 
     return StreamingResponse(

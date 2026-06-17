@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.helpers.db import init_db, get_client
+from src.helpers.db import init_db, SessionLocal
 from src.helpers.config import Settings
 from src.helpers.logging_config import get_logger, sanitize_headers, generate_request_id
 
@@ -69,18 +69,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database connection on startup."""
-    from src.helpers.config import settings
-    db_type = getattr(settings, "DATABASE_TYPE", "postgres").lower()
-    logger.info(f"Application starting — connecting to {db_type.capitalize()} …")
+    """Initialize PostgreSQL connection on startup."""
+    logger.info("Application starting — connecting to PostgreSQL …")
     await init_db()
     logger.info("Database connected — application is up")
     yield
-    if db_type == "mongodb":
-        client = get_client()
-        if client:
-            client.close()
-    logger.info("Application shutting down, database connection closed")
+    logger.info("Application shutting down")
 
 
 # ── FastAPI App ──────────────────────────────────────────────────────────────
@@ -127,26 +121,14 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """
-    Check if the server and database are running correctly.
-    """
+    """Check if the server and PostgreSQL database are running correctly."""
     try:
-        from src.helpers.config import settings
-        db_type = getattr(settings, "DATABASE_TYPE", "postgres").lower()
-        if db_type == "postgres":
-            from src.helpers.db import SessionLocal
-            from sqlalchemy import text
-            if SessionLocal is None:
-                raise RuntimeError("PostgreSQL SessionLocal is not initialized.")
-            async with SessionLocal() as session:
-                await session.execute(text("SELECT 1"))
-            logger.info("Health check passed — PostgreSQL connected")
-        else:
-            client = get_client()
-            # Execute a simple command to verify database connectivity
-            await client.admin.command('ping')
-            logger.info("Health check passed — MongoDB connected")
-            
+        from sqlalchemy import text
+        if SessionLocal is None:
+            raise RuntimeError("PostgreSQL SessionLocal is not initialized.")
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        logger.info("Health check passed — PostgreSQL connected")
         return {
             "status": "online",
             "database": "connected",

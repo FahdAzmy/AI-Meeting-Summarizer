@@ -10,9 +10,8 @@ httpx>=0.27.0
 
 
 
-# ── Database: MongoDB (Meetings) ──
-motor>=3.3.0
-beanie>=1.25.0
+# ── Database: Alembic migrations ──
+alembic>=1.13.0
 
 # ── Database: PostgreSQL (SQL) ──
 sqlalchemy>=2.0.0

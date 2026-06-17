@@ -106,12 +106,8 @@ class Config(BaseSettings):
     )
 
     # ------------------------------------------------------------------
-    # Storage & Distribution – Output Storage Module (OS)
+    # Storage & Distribution – PostgreSQL only
     # ------------------------------------------------------------------
-    DATABASE_TYPE: str = Field(
-        default="postgres",
-        description="Database backend type to use ('postgres' or 'mongodb').",
-    )
     POSTGRES_USER: str = Field(
         default="postgres",
         description="PostgreSQL username.",
@@ -135,19 +131,6 @@ class Config(BaseSettings):
     DATABASE_URL: str | None = Field(
         default=None,
         description="Full PostgreSQL database connection URL.",
-    )
-
-    MONGO_URI: str = Field(
-        default="mongodb://localhost:27017",
-        description=(
-            "MongoDB connection URI used by the Beanie ODM. "
-            "Local default: mongodb://localhost:27017. "
-            "Atlas example: mongodb+srv://<user>:<pwd>@<cluster>.mongodb.net/<db>."
-        ),
-    )
-    MONGO_DB: str = Field(
-        default="ai_summarizer",
-        description="MongoDB database name for the meeting documents.",
     )
 
     # SMTP credentials for outbound email dispatch (aiosmtplib).

@@ -34,17 +34,13 @@ class OutputStorage:
             raise InvalidBackendError(backend)
 
         self.backend: str = backend
-
         self.email_sender: str = cfg.EMAIL_SENDER
         self.email_password: str = cfg.EMAIL_PASSWORD
         self.smtp_host: str = cfg.EMAIL_SMTP_HOST
         self.smtp_port: int = cfg.EMAIL_SMTP_PORT
 
-        self.mongo_uri: str = cfg.MONGO_URI
-        self.mongo_db: str = cfg.MONGO_DB
-
         logger.debug(
-            "OutputStorage initialised \u2014 backend=%r smtp_host=%r",
+            "OutputStorage initialised — backend=%r smtp_host=%r",
             self.backend,
             self.smtp_host,
         )
@@ -55,7 +51,7 @@ class OutputStorage:
         report: dict[str, Any],
         transcript: dict[str, Any],
     ) -> None:
-        """Persist MeetingReport data onto the Beanie Meeting document."""
+        """Persist MeetingReport data onto the PostgreSQL Meeting row."""
         await persist_meeting_report(meeting, report, transcript)
 
     @staticmethod
@@ -93,7 +89,7 @@ class OutputStorage:
         t_start: float = time.monotonic()
 
         logger.info(
-            "[OS] store() started \u2014 meeting=%r backend=%r",
+            "[OS] store() started — meeting=%r backend=%r",
             meeting_id,
             self.backend,
         )
@@ -102,7 +98,7 @@ class OutputStorage:
 
         elapsed_ms: float = (time.monotonic() - t_start) * 1000
         logger.info(
-            "[OS] store() complete \u2014 meeting=%r backend=%r elapsed_ms=%.1f",
+            "[OS] store() complete — meeting=%r backend=%r elapsed_ms=%.1f",
             meeting_id,
             self.backend,
             elapsed_ms,
