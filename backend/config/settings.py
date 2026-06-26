@@ -57,6 +57,10 @@ class Config(BaseSettings):
     # ------------------------------------------------------------------
     # STT (Speech-to-Text) API Keys – Transcription Module
     # ------------------------------------------------------------------
+    STT_PROVIDER: str = Field(
+        default="deepgram",
+        description="The default STT provider to use (whisper, deepgram, assemblyai).",
+    )
     WHISPER_API_KEY: str = Field(
         default="", description="OpenAI API key used for Whisper transcription."
     )
@@ -97,24 +101,36 @@ class Config(BaseSettings):
         ),
     )
     LLM_TIMEOUT: int = Field(
-        default=120,
+        default=300,
         description="Maximum seconds to wait for an LLM response before raising LLMTimeoutError.",
     )
 
     # ------------------------------------------------------------------
-    # Storage & Distribution – Output Storage Module (OS)
+    # Storage & Distribution – PostgreSQL only
     # ------------------------------------------------------------------
-    MONGO_URI: str = Field(
-        default="mongodb://localhost:27017",
-        description=(
-            "MongoDB connection URI used by the Beanie ODM. "
-            "Local default: mongodb://localhost:27017. "
-            "Atlas example: mongodb+srv://<user>:<pwd>@<cluster>.mongodb.net/<db>."
-        ),
+    POSTGRES_USER: str = Field(
+        default="postgres",
+        description="PostgreSQL username.",
     )
-    MONGO_DB: str = Field(
+    POSTGRES_PASSWORD: str = Field(
+        default="postgres",
+        description="PostgreSQL password.",
+    )
+    POSTGRES_SERVER: str = Field(
+        default="localhost",
+        description="PostgreSQL server hostname.",
+    )
+    POSTGRES_PORT: int = Field(
+        default=5432,
+        description="PostgreSQL port.",
+    )
+    POSTGRES_DB: str = Field(
         default="ai_summarizer",
-        description="MongoDB database name for the meeting documents.",
+        description="PostgreSQL database name.",
+    )
+    DATABASE_URL: str | None = Field(
+        default=None,
+        description="Full PostgreSQL database connection URL.",
     )
 
     # SMTP credentials for outbound email dispatch (aiosmtplib).
@@ -142,19 +158,23 @@ class Config(BaseSettings):
         description="SMTP server port (STARTTLS). Default: 587.",
     )
 
-    # Google Sheets integration – used by OutputStorage._store_to_sheets().
-    GOOGLE_SHEETS_ID: str = Field(
+    # ------------------------------------------------------------------
+    # Zoom Meeting SDK – Meeting Access Module (SPEC-011)
+    # ------------------------------------------------------------------
+    ZOOM_SDK_CLIENT_ID: str = Field(
         default="",
         description=(
-            "Google Spreadsheet ID (the long string in the Sheets URL). "
-            "Required when backend='google_sheets'."
+            "Public identifier for the Zoom Meeting SDK App. "
+            "Obtain from the Zoom App Marketplace under App Credentials. "
+            "Required for SDK-based Zoom joining; falls back to Selenium if empty."
         ),
     )
-    GOOGLE_CREDENTIALS_PATH: str = Field(
-        default="credentials.json",
+    ZOOM_SDK_CLIENT_SECRET: str = Field(
+        default="",
         description=(
-            "Absolute or relative path to the Google service-account credentials JSON. "
-            "Defaults to 'credentials.json' in the working directory."
+            "Secret key used to sign JWT signatures for the Zoom Meeting SDK. "
+            "NEVER expose this value to the frontend. "
+            "Required for SDK-based Zoom joining; falls back to Selenium if empty."
         ),
     )
 

@@ -10,8 +10,12 @@ describe('URL Platform Verification', () => {
     expect(detectPlatform('https://company.zoom.us/j/123456789')).toBe('zoom');
   });
 
-  it('should detect MS Teams URLs', () => {
+  it('should detect MS Teams enterprise URLs', () => {
     expect(detectPlatform('https://teams.microsoft.com/l/meetup-join/19%3ameeting_xyz')).toBe('teams');
+  });
+
+  it('should detect MS Teams Live (consumer) URLs', () => {
+    expect(detectPlatform('https://teams.live.com/meet/9362297015184?p=y7BwyN5fArqTg1vBql')).toBe('teams');
   });
 
   it('should gracefully fallback to unknown on invalid urls', () => {
@@ -22,6 +26,8 @@ describe('URL Platform Verification', () => {
 describe('isValidMeetingUrl', () => {
   it('should validate proper meeting URLs', () => {
     expect(isValidMeetingUrl('https://meet.google.com/abc-defg-hij')).toBe(true);
+    expect(isValidMeetingUrl('https://teams.microsoft.com/l/meetup-join/19%3ameeting_xyz')).toBe(true);
+    expect(isValidMeetingUrl('https://teams.live.com/meet/9362297015184?p=y7BwyN5fArqTg1vBql')).toBe(true);
   });
 
   it('should reject invalid URLs', () => {

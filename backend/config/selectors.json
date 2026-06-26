@@ -1,12 +1,17 @@
 {
   "google_meet": {
     "dismiss_dialog": "[data-mdc-dialog-action='ok']",
+    "name_field": "input[aria-label='Your name'], input[jsname='YPqjbf'], input[placeholder='Your name']",
     "mute_mic": "[data-is-muted='false'][aria-label*='microphone']",
     "mute_cam": "[data-is-muted='false'][aria-label*='camera']",
     "join_button": "[data-call-ended='false'] [jsname='Qx7uuf']",
     "join_now_button": "[jsname='V67aGc']",
+    "ask_to_join_button": "button[jsname='Qx7uuf'], button[data-idom-class*='join']",
     "end_screen": "[data-call-ended='true']",
-    "end_text": "//span[contains(text(), 'You left the meeting')]"
+    "end_text": "//span[contains(text(), 'You left the meeting')]",
+    "alone_banner_text": "//div[contains(text(), 'No one else is in this meeting')] | //span[contains(text(), 'No one else is in this meeting')] | //div[contains(text(), \"You're the only one here\")] | //span[contains(text(), \"You're the only one here\")]",
+    "participant_count": "[data-participant-count]",
+    "leave_call_button": "[jsname='CQylAd'] button[aria-label*='Leave'], button[aria-label='Leave call'], [data-tooltip='Leave call'] button, [jsname='CQylAd']"
   },
   "zoom": {
     "join_audio_button": ".join-audio-by-voip__join-btn",
@@ -20,8 +25,10 @@
   "teams": {
     "use_browser_link": "a[data-tid='joinOnWeb']",
     "continue_without_audio": "[data-tid='prejoin-ok-cta']",
-    "join_button": "[data-tid='call-join-button']",
+    "join_button": "[data-tid='prejoin-join-button'], [data-tid='call-join-button']",
     "mute_mic": "[data-tid='toggle-mute']",
+    "dont_use_audio": "[data-tid='prejoin-audio-option-none'], [aria-label*='audio']",
+    "name_field": "input[placeholder='Type your name'], input[data-tid='prejoin-display-name-input']",
     "leave_call_button": "[data-tid='leave-call-btn']",
     "meeting_end_text": "//span[contains(text(), 'The call ended')]"
   }

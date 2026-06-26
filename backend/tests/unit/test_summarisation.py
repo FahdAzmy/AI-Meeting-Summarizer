@@ -138,6 +138,20 @@ class TestGenerateReportSummary:
             for key in ("summary", "action_items", "decisions", "follow_up", "speaker_stats"):
                 assert key in report, f"Missing key: {key}"
 
+    def test_characterization_report_includes_text_speaker_analysis_key(self):
+        """The current report shape includes text_speaker_analysis even when None."""
+        mock_response = _make_openai_response(VALID_LLM_PAYLOAD)
+        with patch("modules.summarisation.openai.OpenAI") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_cls.return_value = mock_client
+
+            bot = Summarisation()
+            report = bot.generate_report(MINIMAL_TRANSCRIPT)
+
+            assert "text_speaker_analysis" in report
+            assert report["text_speaker_analysis"] is None
+
 
 # ---------------------------------------------------------------------------
 # T007 – Action items resolve to Python list-of-dicts (US2)
@@ -302,6 +316,32 @@ class TestSpeakerParticipationAnalytics:
         assert turns["Speaker 0"] == 2
         assert turns["Speaker 1"] == 2
 
+    def test_characterization_supports_normalised_segment_keys_and_detection_method(self):
+        segments = [
+            {"speaker": "Alice", "start_time": 0.0, "end_time": 10.0},
+            {"speaker": "Bob", "start_time": 10.0, "end_time": 15.0},
+        ]
+
+        result = _analyse_participation(
+            segments,
+            detection_method="stt_diarisation",
+        )
+
+        assert result is not None
+        assert result["detection_method"] == "stt_diarisation"
+        assert result["total_meeting_duration_sec"] == pytest.approx(15.0)
+        assert result["speakers"][0]["speaker"] == "Alice"
+        assert result["speakers"][0]["percentage_of_meeting"] == pytest.approx(66.67)
+
+    def test_characterization_negative_segment_duration_is_clamped_to_zero(self):
+        segments = [
+            {"speaker": "Alice", "start": 10.0, "end": 5.0},
+        ]
+
+        result = _analyse_participation(segments)
+
+        assert result is None
+
     def test_generate_report_includes_speaker_stats_when_diarised(self):
         mock_response = _make_openai_response(VALID_LLM_PAYLOAD)
         transcript = {
@@ -321,6 +361,63 @@ class TestSpeakerParticipationAnalytics:
             assert report["speaker_stats"] is not None
             assert "speakers" in report["speaker_stats"]
             assert "most_active_speaker" in report["speaker_stats"]
+
+
+class TestTextSpeakerDetectionCharacterization:
+    """Lock the best-effort text speaker fallback behavior."""
+
+    def test_detect_speakers_from_text_returns_original_segments_when_empty_text(self):
+        with patch("modules.summarisation.openai.OpenAI"):
+            bot = Summarisation()
+
+        original_segments = [{"speaker": None, "text": "raw"}]
+        result = bot._detect_speakers_from_text(
+            {"full_text": "", "segments": original_segments}
+        )
+
+        assert result == original_segments
+
+    def test_detect_speakers_from_text_distributes_duration_by_word_count(self):
+        with patch("modules.summarisation.openai.OpenAI"):
+            bot = Summarisation()
+
+        bot._call_llm = MagicMock(
+            return_value=json.dumps(
+                {
+                    "turns": [
+                        {"speaker": "Alice", "text": "one two"},
+                        {"speaker": "Bob", "text": "three four five six"},
+                    ],
+                    "speakers_identified": 2,
+                }
+            )
+        )
+
+        result = bot._detect_speakers_from_text(
+            {
+                "full_text": "Alice and Bob speak.",
+                "segments": [{"text": "fallback"}],
+                "duration_seconds": 60.0,
+            }
+        )
+
+        assert result == [
+            {"speaker": "Alice", "start_time": 0.0, "end_time": 20.0, "text": "one two"},
+            {"speaker": "Bob", "start_time": 20.0, "end_time": 60.0, "text": "three four five six"},
+        ]
+
+    def test_detect_speakers_from_text_falls_back_on_parse_failure(self):
+        with patch("modules.summarisation.openai.OpenAI"):
+            bot = Summarisation()
+
+        original_segments = [{"speaker": "Speaker 0", "text": "fallback"}]
+        bot._call_llm = MagicMock(return_value="not json")
+
+        result = bot._detect_speakers_from_text(
+            {"full_text": "Some text.", "segments": original_segments}
+        )
+
+        assert result == original_segments
 
 
 # ---------------------------------------------------------------------------

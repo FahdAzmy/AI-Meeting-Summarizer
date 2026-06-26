@@ -6,7 +6,7 @@ from fastapi import FastAPI, Depends, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.helpers.db import init_db, get_client
+from src.helpers.db import init_db, SessionLocal
 from src.helpers.config import Settings
 from src.helpers.logging_config import get_logger, sanitize_headers, generate_request_id
 
@@ -69,15 +69,27 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 # ── Lifespan ─────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database connection on startup."""
-    logger.info("Application starting — connecting to MongoDB …")
+    """Initialize PostgreSQL connection on startup; graceful shutdown."""
+    import asyncio
+
+    logger.info("Application starting — connecting to PostgreSQL …")
     await init_db()
     logger.info("Database connected — application is up")
     yield
-    client = get_client()
-    if client:
-        client.close()
-    logger.info("Application shutting down, database connection closed")
+    # ── Graceful shutdown: wait for in-flight background tasks ────────
+    logger.info("Application shutting down — waiting for background tasks …")
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        logger.info("Waiting for %d background task(s) to finish …", len(pending))
+        done, still_pending = await asyncio.wait(pending, timeout=30)
+        if still_pending:
+            logger.warning(
+                "%d task(s) did not finish within 30 s — cancelling",
+                len(still_pending),
+            )
+            for task in still_pending:
+                task.cancel()
+    logger.info("Application shutdown complete")
 
 
 # ── FastAPI App ──────────────────────────────────────────────────────────────
@@ -92,21 +104,41 @@ app = FastAPI(
 app.add_middleware(RequestLoggingMiddleware)
 
 # CORS
-origins = Settings().CORS_ORIGINS.split(",")
+origins = [o.strip() for o in Settings().CORS_ORIGINS.split(",") if o.strip()]
+if any("localhost" in o or "127.0.0.1" in o for o in origins):
+    logger.warning(
+        "CORS_ORIGINS contains localhost addresses — "
+        "this is NOT safe for production: %s",
+        origins,
+    )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],  # GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],  # Authorization, Content-Type, etc.
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
 from src.routes.api import api_router
+from src.routes.auth import auth_router
+from src.routes.dashboard import dashboard_router
+from src.routes.export import export_router
+from src.routes.members import members_router
+from src.routes.notifications import notifications_router
+from src.routes.teams import teams_router
+from src.routes.zoom import zoom_router
 
 # Include routers
 app.include_router(api_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(dashboard_router, prefix="/api")
+app.include_router(export_router, prefix="/api")
+app.include_router(members_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(teams_router, prefix="/api")
+app.include_router(zoom_router, prefix="/api")
 
 
 @app.get("/")
@@ -120,24 +152,25 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """
-    Check if the server and database are running correctly.
-    """
+    """Check if the server and PostgreSQL database are running correctly."""
     try:
-        client = get_client()
-        # Execute a simple command to verify database connectivity
-        await client.admin.command('ping')
-        logger.info("Health check passed — database connected")
+        from sqlalchemy import text
+        if SessionLocal is None:
+            raise RuntimeError("PostgreSQL SessionLocal is not initialized.")
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        logger.info("Health check passed — PostgreSQL connected")
         return {
             "status": "online",
             "database": "connected",
             "message": "System is healthy",
         }
     except Exception as e:
+        # Log the full error server-side but NEVER expose it to clients
         logger.error("Health check FAILED — database error: %s", str(e))
         return {
-            "status": "online",
-            "database": f"error: {str(e)}",
+            "status": "degraded",
+            "database": "disconnected",
             "message": "Database connection failed",
         }
 

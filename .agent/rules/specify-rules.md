@@ -1,6 +1,6 @@
 ﻿# project Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-15
+Auto-generated from all feature plans. Last updated: 2026-05-03
 
 ## Active Technologies
 - Python 3.10+ + `selenium>=4.15.0`, `webdriver-manager>=4.0.0` (003-meeting-access)
@@ -15,6 +15,14 @@ Auto-generated from all feature plans. Last updated: 2026-03-15
 - MongoDB (local or Atlas) and local filesystem (for `.csv` fallbacks). (007-output-storage)
 - Python 3.10+ + `fastapi` (BackgroundTasks), `asyncio`, `beanie` (for real-time tracking) (008-pipeline-orchestrator)
 - MongoDB (Updating live Document instances) (008-pipeline-orchestrator)
+- [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION] + [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION] (009-configuration-environment)
+- [if applicable, e.g., PostgreSQL, CoreData, files or N/A] (009-configuration-environment)
+- Python 3.11+ + Pydantic, pydantic-settings, dotenv (009-configuration-environment)
+- Environment variables, `.env` file, MongoDB (via Beanie ODM, for dashboard overrides) (009-configuration-environment)
+- Python 3.11 (backend), TypeScript/Next.js 15 (frontend) + FastAPI, openpyxl (Excel), reportlab (PDF), Beanie ODM (MongoDB) (010-meeting-export)
+- MongoDB (existing `meetings` collection, read-only for this feature) (010-meeting-export)
+- Python 3.10+ (backend), TypeScript/Next.js (frontend) + `PyJWT>=2.8.0` (backend), `@zoom/meetingsdk` (frontend) (011-zoom-meeting-sdk)
+- MongoDB (Beanie ODM) — no new collections needed (011-zoom-meeting-sdk)
 
 - TypeScript, React 18, Node.js 18+ + Next.js 14+ (App Router), Tailwind CSS, React Hook Form (for forms) (002-frontend-dashboard)
 
@@ -35,9 +43,9 @@ npm test; npm run lint
 TypeScript, React 18, Node.js 18+: Follow standard conventions
 
 ## Recent Changes
-- 008-pipeline-orchestrator: Added Python 3.10+ + `fastapi` (BackgroundTasks), `asyncio`, `beanie` (for real-time tracking)
-- 007-output-storage: Added Python 3.10+ + `motor` (async MongoDB driver), `beanie` (async ODM), `aiosmtplib` (async SMTP), `gspread` (Google Sheets SDK), `pandas` (for CSV fallbacks).
-- 006-summarisation: Added Python 3.10+ + `openai>=1.0` (for LLM), `pydantic>=2.0` (for strict JSON schema outputs from LLM calls)
+- 011-zoom-meeting-sdk: Added Python 3.10+ (backend), TypeScript/Next.js (frontend) + `PyJWT>=2.8.0` (backend), `@zoom/meetingsdk` (frontend)
+- 010-meeting-export: Added Python 3.11 (backend), TypeScript/Next.js 15 (frontend) + FastAPI, openpyxl (Excel), reportlab (PDF), Beanie ODM (MongoDB)
+- 009-configuration-environment: Added Python 3.11+ + Pydantic, pydantic-settings, dotenv
 
 
 <!-- MANUAL ADDITIONS START -->

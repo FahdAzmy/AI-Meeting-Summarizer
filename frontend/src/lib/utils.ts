@@ -6,7 +6,7 @@ export function detectPlatform(url: string): Platform | null {
   
   if (lowerUrl.includes('meet.google.com')) return 'google_meet';
   if (lowerUrl.includes('zoom.us')) return 'zoom';
-  if (lowerUrl.includes('teams.microsoft.com')) return 'teams';
+  if (lowerUrl.includes('teams.microsoft.com') || lowerUrl.includes('teams.live.com')) return 'teams';
   
   return null;
 }

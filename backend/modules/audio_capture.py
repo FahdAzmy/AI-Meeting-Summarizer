@@ -36,6 +36,8 @@ from modules.errors import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["AudioCapture"]
+
 
 class AudioCapture:
     """
@@ -112,9 +114,7 @@ class AudioCapture:
         logger.debug("Performing OBS healthcheck…")
         try:
             version_info = self.client.get_version()
-            logger.info(
-                "OBS healthcheck passed – OBS version: %s", version_info
-            )
+            logger.info("OBS healthcheck passed – OBS version: %s", version_info)
             return True
         except Exception as exc:
             logger.error("OBS healthcheck failed – %r", exc)
@@ -173,15 +173,7 @@ class AudioCapture:
 
         try:
             response = self.client.stop_record()
-            # obsws-python returns a StopRecordDataclass; try both naming
-            # conventions (snake_case used by the library, camelCase from
-            # the raw OBS protocol) before falling back to __dict__ inspection.
-            output_path: str = (
-                getattr(response, "output_path", None)
-                or getattr(response, "outputPath", None)
-                or (vars(response).get("output_path") if hasattr(response, "__dict__") else None)
-                or (vars(response).get("outputPath") if hasattr(response, "__dict__") else None)
-            )
+            output_path = self._extract_output_path(response)
             logger.debug(
                 "OBS stop_record() response type: %s, attrs: %s",
                 type(response).__name__,
@@ -197,6 +189,8 @@ class AudioCapture:
             logger.error("Recording file not found at path: %s", output_path)
             raise EmptyRecordingError(path=output_path or "<none>")
 
+        self._log_unexpected_output_dir(output_path)
+
         file_size = os.path.getsize(output_path)
         if file_size == 0:
             logger.error("Recording file is 0 bytes: %s", output_path)
@@ -208,3 +202,57 @@ class AudioCapture:
             file_size,
         )
         return output_path
+
+    def close(self) -> None:
+        """Close the OBS WebSocket client when the library exposes a close hook."""
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+
+        for method_name in ("disconnect", "close"):
+            close_method = getattr(client, method_name, None)
+            if callable(close_method):
+                try:
+                    close_method()
+                    logger.debug("OBS client closed via %s().", method_name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "OBS client close via %s() failed: %s", method_name, exc
+                    )
+                return
+
+    def __enter__(self) -> "AudioCapture":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    @staticmethod
+    def _extract_output_path(response: object) -> str | None:
+        """Extract the OBS recording path from known response shapes."""
+        for attr_name in ("output_path", "outputPath"):
+            value = getattr(response, attr_name, None)
+            if value:
+                return str(value)
+
+        if hasattr(response, "__dict__"):
+            response_vars = vars(response)
+            for attr_name in ("output_path", "outputPath"):
+                value = response_vars.get(attr_name)
+                if value:
+                    return str(value)
+
+        return None
+
+    def _log_unexpected_output_dir(self, output_path: str) -> None:
+        """Warn when OBS writes outside the configured recordings directory."""
+        try:
+            recordings_dir = os.path.abspath(self._recordings_dir)
+            recording_path = os.path.abspath(output_path)
+            if os.path.commonpath([recordings_dir, recording_path]) != recordings_dir:
+                logger.warning(
+                    "OBS wrote recording outside configured RECORDINGS_DIR: %s",
+                    output_path,
+                )
+        except (OSError, ValueError) as exc:
+            logger.debug("Could not compare recording path to RECORDINGS_DIR: %s", exc)

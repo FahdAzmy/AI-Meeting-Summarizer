@@ -1,15 +1,16 @@
+"""Public MeetingAccess facade.
+
+Automates joining/leaving Google Meet, Zoom, MS Teams, and the local Zoom SDK
+page using Selenium WebDriver. The public API is intentionally preserved while
+the implementation lives in small internal modules under ``modules._meeting_access``.
 """
-Meeting Access Module – MeetingAccess
-Automates joining/leaving Google Meet, Zoom, and MS Teams using Selenium WebDriver.
-Selectors are loaded from config/selectors.json to allow hot-swapping without redeploy.
-"""
+
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
 from pathlib import Path
+from typing import Any
 
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
@@ -20,32 +21,47 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
-from modules.errors import (
-    BrowserInitError,
-    MeetingJoinError,
-    PlatformNotSupported,
-    WaitingRoomTimeout,
+from modules._meeting_access.browser import build_chrome_options, create_chrome_driver
+from modules._meeting_access.constants import SELECTORS_PATH
+from modules._meeting_access.detection import (
+    PLATFORM_PATTERNS,
+    detect_platform,
+    teams_web_url,
+    zoom_web_client_url,
 )
+from modules._meeting_access.interactions import safe_click, try_click_strategies
+from modules._meeting_access.monitor import (
+    click_leave_button,
+    is_alone_in_meeting,
+    meeting_has_ended,
+    wait_for_teams_lobby,
+)
+from modules._meeting_access.selectors import load_selectors
+from modules._meeting_access.strategies.google_meet import GoogleMeetStrategy
+from modules._meeting_access.strategies.teams import TeamsStrategy
+from modules._meeting_access.strategies.zoom import ZoomStrategy
+from modules._meeting_access.strategies.zoom_sdk import ZoomSdkStrategy
+from modules._meeting_access.types import (
+    LocatorStrategy,
+    Platform,
+    PlatformSelectors,
+    SelectorsConfig,
+)
+from modules.errors import BrowserInitError
 
 logger = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────────
-# Platform detection patterns
-# ──────────────────────────────────────────────────────────────
-_PLATFORM_PATTERNS: dict[str, re.Pattern] = {
-    "google_meet": re.compile(r"https?://meet\.google\.com/[a-z]{3}-[a-z]{4}-[a-z]{3}", re.IGNORECASE),
-    "zoom": re.compile(r"https?://(?:[a-z0-9-]+\.)?zoom\.us/j/\d+", re.IGNORECASE),
-    "teams": re.compile(
-        r"https?://teams\.microsoft\.com/l/meetup-join/[^\s]+",
-        re.IGNORECASE,
-    ),
-}
+__all__ = ["MeetingAccess", "Platform"]
 
-_SELECTORS_PATH = Path(__file__).parent.parent / "config" / "selectors.json"
+# Backward-compatible module constants for tests/tools that import them.
+_PLATFORM_PATTERNS = PLATFORM_PATTERNS
+_SELECTORS_PATH = SELECTORS_PATH
 
 
 class MeetingAccess:
     """Autonomous Selenium bot that joins, monitors, and leaves virtual meetings."""
+
+    BOT_NAME = "AI Summarizer"
 
     def __init__(
         self,
@@ -56,27 +72,30 @@ class MeetingAccess:
     ) -> None:
         self.retry_limit = retry_limit
         self.current_attempt = 0
-        self.detected_platform: str = ""
+        self.detected_platform: Platform | str = ""
+        self.selectors: SelectorsConfig = load_selectors(selectors_path)
 
-        # Load selector configuration
         try:
-            self.selectors: dict = json.loads(Path(selectors_path).read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError) as exc:
-            logger.warning("selectors.json not found or invalid – using empty selectors. %s", exc)
-            self.selectors = {}
-
-        # Bootstrap Chrome driver
-        try:
-            options = self._build_chrome_options(headless=headless)
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver = create_chrome_driver(
+                headless=headless,
+                webdriver_module=webdriver,
+                service_cls=Service,
+                manager_cls=ChromeDriverManager,
+            )
             logger.info("Chrome WebDriver initialised successfully.")
         except Exception as exc:  # noqa: BLE001
             raise BrowserInitError(cause=exc) from exc
 
-    # ──────────────────────────────────────────────────────────
+    @property
+    def platform_key(self) -> str:
+        """Return the current platform as a plain selector/config key."""
+        if isinstance(self.detected_platform, Platform):
+            return self.detected_platform.value
+        return self.detected_platform
+
+    # ------------------------------------------------------------------
     # Public API
-    # ──────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def join(self, link: str) -> None:
         """Route to the correct platform join logic based on URL detection."""
@@ -84,240 +103,177 @@ class MeetingAccess:
         logger.info("Detected platform: %s. Starting join flow.", self.detected_platform)
 
         router = {
-            "google_meet": self._join_google_meet,
-            "zoom": self._join_zoom,
-            "teams": self._join_teams,
+            Platform.GOOGLE_MEET: self._join_google_meet,
+            Platform.ZOOM: self._join_zoom,
+            Platform.ZOOM_SDK: self._join_zoom_sdk,
+            Platform.TEAMS: self._join_teams,
         }
         router[self.detected_platform](link)
 
-    def wait_until_end(self, *, poll_interval: int = 30, waiting_room_timeout: int = 300) -> None:
-        """Block until the meeting ends by polling the DOM every *poll_interval* seconds."""
+    def wait_until_end(
+        self,
+        *,
+        poll_interval: int = 5,
+        alone_grace_period: int = 30,
+        waiting_room_timeout: int = 300,
+    ) -> None:
+        """Block until the meeting ends or all other participants leave."""
         logger.info("Waiting for meeting to end (platform=%s).", self.detected_platform)
-        platform_sel = self.selectors.get(self.detected_platform, {})
+        platform_sel = self.selectors.get(self.platform_key, {})
         end_xpath = platform_sel.get("end_text", "")
 
+        # Kept for API compatibility: the legacy implementation accepts this
+        # parameter but Teams lobby handling still uses its established 300s cap.
+        _ = waiting_room_timeout
+
+        if self.platform_key == Platform.TEAMS.value:
+            wait_for_teams_lobby(self, lobby_timeout=300)
+
+        alone_since: float | None = None
+        poll_count = 0
+        meeting_start = self._now()
+        min_meeting_duration = 30
+
         while True:
+            poll_count += 1
+            elapsed_in_meeting = int(self._now() - meeting_start)
+            logger.info(
+                "Poll #%d | Checking meeting status (platform=%s) | in-meeting %ds...",
+                poll_count,
+                self.detected_platform,
+                elapsed_in_meeting,
+            )
+
             if self._meeting_has_ended(end_xpath):
-                logger.info("Meeting end detected. Exiting wait loop.")
+                logger.info(
+                    "Meeting end detected (end screen) after %ds. Exiting wait loop.",
+                    elapsed_in_meeting,
+                )
                 return
-            time.sleep(poll_interval)
+
+            if elapsed_in_meeting < min_meeting_duration:
+                logger.debug(
+                    "Warm-up period (%ds/%ds) - skipping alone check.",
+                    elapsed_in_meeting,
+                    min_meeting_duration,
+                )
+            else:
+                is_alone = self._is_alone_in_meeting(platform_sel)
+                logger.info("Poll #%d | is_alone=%s", poll_count, is_alone)
+
+                if is_alone:
+                    if alone_since is None:
+                        alone_since = self._now()
+                        logger.info(
+                            "Alone in meeting detected - starting %ds grace period.",
+                            alone_grace_period,
+                        )
+                    elapsed = self._now() - alone_since
+                    if elapsed >= alone_grace_period:
+                        logger.info(
+                            "Alone for %.0fs (grace=%ds). Meeting is over.",
+                            elapsed,
+                            alone_grace_period,
+                        )
+                        return
+                elif alone_since is not None:
+                    logger.info("Participant re-joined - resetting alone timer.")
+                    alone_since = None
+
+            self._sleep(poll_interval)
 
     def leave(self) -> None:
-        """Terminate the browser and release all resources."""
+        """Click the leave-call button if possible, then quit the browser."""
         logger.info("Leaving meeting and closing browser.")
         try:
+            self._click_leave_button()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not click leave button: %s", exc)
+
+        try:
+            self._sleep(2)
             self.driver.quit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Error during driver.quit(): %s", exc)
 
-    # ──────────────────────────────────────────────────────────
-    # Platform detection
-    # ──────────────────────────────────────────────────────────
+    def close(self) -> None:
+        """Release the browser driver without attempting in-meeting UI actions."""
+        try:
+            self.driver.quit()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Error during driver.close cleanup: %s", exc)
+
+    def __enter__(self) -> "MeetingAccess":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    # ------------------------------------------------------------------
+    # Compatibility wrappers and implementation seams
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _detect_platform(url: str) -> str:
-        """Return the platform key for *url* or raise PlatformNotSupported."""
-        for platform, pattern in _PLATFORM_PATTERNS.items():
-            if pattern.match(url):
-                return platform
-        raise PlatformNotSupported(url)
-
-    # ──────────────────────────────────────────────────────────
-    # Chrome setup
-    # ──────────────────────────────────────────────────────────
+    def _detect_platform(url: str) -> Platform:
+        return detect_platform(url)
 
     @staticmethod
     def _build_chrome_options(*, headless: bool = False) -> Options:
-        options = Options()
-        # Fake hardware streams – bypass mic/cam permission dialogs
-        options.add_argument("--use-fake-ui-for-media-stream")
-        options.add_argument("--use-fake-device-for-media-stream")
-        # Reduce bot-detection risk
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        # Performance / stability
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        if headless:
-            options.add_argument("--headless=new")
-        return options
+        return build_chrome_options(headless=headless)
 
-    # ──────────────────────────────────────────────────────────
-    # Google Meet join logic (US1 – T015)
-    # ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _teams_web_url(link: str) -> str:
+        return teams_web_url(link)
+
+    @staticmethod
+    def _zoom_web_client_url(link: str) -> str:
+        return zoom_web_client_url(link)
 
     def _join_google_meet(self, link: str) -> None:
-        sel = self.selectors.get("google_meet", {})
-        for attempt in range(1, self.retry_limit + 1):
-            self.current_attempt = attempt
-            try:
-                logger.info("[Google Meet] Attempt %d/%d – navigating to %s", attempt, self.retry_limit, link)
-                self.driver.get(link)
-
-                wait = WebDriverWait(self.driver, 15)
-
-                # Dismiss pre-join dialog if present
-                self._safe_click(wait, sel.get("dismiss_dialog", ""), By.CSS_SELECTOR)
-
-                # Mute mic and camera before joining
-                self._safe_click(wait, sel.get("mute_mic", ""), By.CSS_SELECTOR)
-                self._safe_click(wait, sel.get("mute_cam", ""), By.CSS_SELECTOR)
-
-                # Click "Join now"
-                join_btn = wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel.get("join_now_button", "[jsname='V67aGc']")))
-                )
-                join_btn.click()
-                logger.info("[Google Meet] Joined successfully on attempt %d.", attempt)
-                return
-
-            except (TimeoutException, NoSuchElementException) as exc:
-                logger.warning("[Google Meet] Attempt %d failed: %s", attempt, exc)
-                if attempt < self.retry_limit:
-                    time.sleep(10)
-
-        raise MeetingJoinError(platform="google_meet", attempt=self.retry_limit)
-
-    # ──────────────────────────────────────────────────────────
-    # Zoom join logic (US1 – T016)
-    # ──────────────────────────────────────────────────────────
+        GoogleMeetStrategy(self).join(link)
 
     def _join_zoom(self, link: str) -> None:
-        sel = self.selectors.get("zoom", {})
-        for attempt in range(1, self.retry_limit + 1):
-            self.current_attempt = attempt
-            try:
-                logger.info("[Zoom] Attempt %d/%d – navigating to %s", attempt, self.retry_limit, link)
-                self.driver.get(link)
+        ZoomStrategy(self).join(link)
 
-                wait = WebDriverWait(self.driver, 15)
+    def _handle_zoom_waiting_room(self, wait: WebDriverWait, sel: dict[str, Any]) -> None:
+        ZoomStrategy(self).handle_waiting_room(wait, sel)
 
-                # Enter display name
-                name_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel.get("name_field", "#inputname"))))
-                name_field.clear()
-                name_field.send_keys("AI Meeting Assistant")
-
-                # Click Join
-                join_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel.get("join_button", ".preview-join-button"))))
-                join_btn.click()
-
-                # Detect and handle waiting room
-                self._handle_zoom_waiting_room(wait, sel)
-
-                logger.info("[Zoom] Joined successfully on attempt %d.", attempt)
-                return
-
-            except WaitingRoomTimeout:
-                raise
-            except (TimeoutException, NoSuchElementException) as exc:
-                logger.warning("[Zoom] Attempt %d failed: %s", attempt, exc)
-                if attempt < self.retry_limit:
-                    time.sleep(10)
-
-        raise MeetingJoinError(platform="zoom", attempt=self.retry_limit)
-
-    def _handle_zoom_waiting_room(self, wait: WebDriverWait, sel: dict) -> None:
-        """Poll for waiting room indicator and raise WaitingRoomTimeout if exceeded."""
-        deadline = time.time() + 300  # 300-second hard limit (MA-004)
-        wr_xpath = sel.get("waiting_room_text", "//p[contains(text(), 'Please wait')]")
-        while time.time() < deadline:
-            try:
-                self.driver.find_element(By.XPATH, wr_xpath)
-                logger.debug("[Zoom] Still in waiting room…")
-                time.sleep(10)
-            except NoSuchElementException:
-                return  # No longer in waiting room
-        raise WaitingRoomTimeout(timeout_seconds=300)
-
-    # ──────────────────────────────────────────────────────────
-    # MS Teams join logic (US1 – T017)
-    # ──────────────────────────────────────────────────────────
+    def _join_zoom_sdk(self, link: str) -> None:
+        ZoomSdkStrategy(self).join(link)
 
     def _join_teams(self, link: str) -> None:
-        sel = self.selectors.get("teams", {})
-        for attempt in range(1, self.retry_limit + 1):
-            self.current_attempt = attempt
-            try:
-                logger.info("[Teams] Attempt %d/%d – navigating to %s", attempt, self.retry_limit, link)
-                self.driver.get(link)
-
-                wait = WebDriverWait(self.driver, 15)
-
-                # Bypass "Open app" prompt – choose "Continue on this browser"
-                use_browser = wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel.get("use_browser_link", "a[data-tid='joinOnWeb']")))
-                )
-                use_browser.click()
-
-                # Continue without audio/video if prompted
-                self._safe_click(wait, sel.get("continue_without_audio", "[data-tid='prejoin-ok-cta']"), By.CSS_SELECTOR)
-
-                # Mute mic
-                self._safe_click(wait, sel.get("mute_mic", "[data-tid='toggle-mute']"), By.CSS_SELECTOR)
-
-                # Join call
-                join_btn = wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, sel.get("join_button", "[data-tid='call-join-button']")))
-                )
-                join_btn.click()
-                logger.info("[Teams] Joined successfully on attempt %d.", attempt)
-                return
-
-            except (TimeoutException, NoSuchElementException) as exc:
-                logger.warning("[Teams] Attempt %d failed: %s", attempt, exc)
-                if attempt < self.retry_limit:
-                    time.sleep(10)
-
-        raise MeetingJoinError(platform="teams", attempt=self.retry_limit)
-
-    # ──────────────────────────────────────────────────────────
-    # End-detection helpers (US2 – T021, T022)
-    # ──────────────────────────────────────────────────────────
+        TeamsStrategy(self).join(link)
 
     def _meeting_has_ended(self, end_xpath: str) -> bool:
-        """Return True if an end-screen element is found in the DOM."""
-        # Google Meet: data-call-ended attribute (T021)
-        if self.detected_platform == "google_meet":
-            try:
-                self.driver.find_element(By.CSS_SELECTOR, "[data-call-ended='true']")
-                return True
-            except NoSuchElementException:
-                pass
+        return meeting_has_ended(self, end_xpath)
 
-        # Zoom: URL change or disconnect dialog (T022)
-        if self.detected_platform == "zoom":
-            current_url = self.driver.current_url
-            if "meeting/end" in current_url or "reason=ended" in current_url:
-                return True
-            try:
-                dialog = self.driver.find_element(By.CSS_SELECTOR, ".zm-modal-body-title")
-                if "ended" in dialog.text.lower():
-                    return True
-            except NoSuchElementException:
-                pass
+    def _is_alone_in_meeting(self, platform_sel: dict[str, Any]) -> bool:
+        return is_alone_in_meeting(self, platform_sel)
 
-        # Generic xpath check (all platforms)
-        if end_xpath:
-            try:
-                self.driver.find_element(By.XPATH, end_xpath)
-                return True
-            except NoSuchElementException:
-                pass
+    def _click_leave_button(self) -> None:
+        click_leave_button(self)
 
-        return False
-
-    # ──────────────────────────────────────────────────────────
-    # Utilities
-    # ──────────────────────────────────────────────────────────
+    def _try_click_strategies(
+        self,
+        strategies: list[LocatorStrategy],
+        *,
+        timeout: int = 5,
+    ) -> bool:
+        return try_click_strategies(
+            wait_factory=self._wait,
+            strategies=strategies,
+            timeout=timeout,
+            logger=logger,
+        )
 
     def _safe_click(self, wait: WebDriverWait, selector: str, by: str = By.CSS_SELECTOR) -> None:
-        """Click an element if it is present; silently skip if absent."""
-        if not selector:
-            return
-        try:
-            el = wait.until(EC.element_to_be_clickable((by, selector)))
-            el.click()
-        except (TimeoutException, NoSuchElementException):
-            pass
+        safe_click(wait, selector, by, logger=logger)
+
+    def _wait(self, timeout: int) -> WebDriverWait:
+        return WebDriverWait(self.driver, timeout)
+
+    def _sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def _now(self) -> float:
+        return time.time()

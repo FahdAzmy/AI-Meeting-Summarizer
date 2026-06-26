@@ -1,7 +1,7 @@
 """
 modules/storage_errors.py
 --------------------------
-Custom exception structs (OS-001 through OS-004) for the Output & Storage Module.
+Custom exception structs (OS-001, OS-003, OS-004) for the Output & Storage Module.
 
 Each exception maps one-to-one with a specific failure mode documented in the
 data-model, allowing the pipeline orchestrator to make deterministic routing
@@ -11,7 +11,6 @@ exceptions.
 Exceptions
 ----------
   OS-001  EmailDeliveryError    — Global SMTP failure or authentication blockade.
-  OS-002  SheetsWriteError      — Google Sheets API failure; triggers CSV fallback.
   OS-003  DatabaseWriteError    — MongoDB engine failure during ``await meeting.save()``.
   OS-004  InvalidBackendError   — Unconfigured or unrecognised ``backend`` value.
 """
@@ -42,32 +41,6 @@ class EmailDeliveryError(Exception):
         super().__init__(
             f"[{self.code}] Email delivery failed for '{recipient}'. "
             f"Cause: {cause!r}"
-        )
-
-
-class SheetsWriteError(Exception):
-    """OS-002: Google Sheets API write failure.
-
-    Raised when ``gspread`` raises any exception while attempting to append
-    rows to the target spreadsheet.  The ``store()`` orchestrator catches this
-    and triggers the Pandas CSV fallback, ensuring data is never silently lost.
-
-    Parameters
-    ----------
-    spreadsheet_id:
-        The Google Sheets document ID (or name) that was being written to.
-    cause:
-        The underlying ``gspread`` exception that was caught.
-    """
-
-    code = "OS-002"
-
-    def __init__(self, spreadsheet_id: str, cause: Exception | None = None) -> None:
-        self.spreadsheet_id = spreadsheet_id
-        self.cause = cause
-        super().__init__(
-            f"[{self.code}] Google Sheets write failed for spreadsheet "
-            f"'{spreadsheet_id}'. Cause: {cause!r}"
         )
 
 
@@ -103,8 +76,8 @@ class InvalidBackendError(Exception):
 
     Raised by the ``OutputStorage`` constructor (or the ``store()`` dispatcher)
     when the ``backend`` parameter does not match any known routing target
-    (e.g. ``'database'`` or ``'google_sheets'``).  This prevents silent
-    mis-routing due to typos or missing environment variables.
+    (e.g. ``'database'``).  This prevents silent mis-routing due to typos or
+    missing environment variables.
 
     Parameters
     ----------
@@ -114,7 +87,7 @@ class InvalidBackendError(Exception):
 
     code = "OS-004"
 
-    VALID_BACKENDS: frozenset[str] = frozenset({"database", "google_sheets"})
+    VALID_BACKENDS: frozenset[str] = frozenset({"database"})
 
     def __init__(self, backend: str) -> None:
         self.backend = backend

@@ -1,0 +1,11 @@
+.agent/
+.claude/
+.specify/
+CLAUDE.md
+.opencode/
+AGENTS.md
+.impeccable
+.pytest_cache
+.ruff_cache
+.agentcache
+.specify

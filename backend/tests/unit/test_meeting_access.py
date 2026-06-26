@@ -17,7 +17,7 @@ Coverage map:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, PropertyMock, call, patch
+from unittest.mock import ANY, MagicMock, PropertyMock, call, patch
 
 import pytest
 
@@ -39,6 +39,7 @@ ZOOM_URL = "https://us02web.zoom.us/j/1234567890"
 TEAMS_URL = (
     "https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc/0?context=%7b%7d"
 )
+TEAMS_LIVE_URL = "https://teams.live.com/meet/9362297015184?p=y7BwyN5fArqTg1vBql"
 INVALID_URL = "https://example.com/meeting?token=xyz"
 
 
@@ -52,6 +53,12 @@ def _make_mock_driver() -> MagicMock:
 # ──────────────────────────────────────────────────────────────
 # T005 – Base fixture: mock Chrome so no browser opens
 # ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def no_real_sleep():
+    with patch("modules.meeting_access.time.sleep"):
+        yield
 
 
 @pytest.fixture()
@@ -83,19 +90,26 @@ def bot(mock_chrome, tmp_path):
 
 class TestDetectPlatform:
     def test_google_meet_url_detected(self):
-        from modules.meeting_access import MeetingAccess
+        from modules.meeting_access import MeetingAccess, Platform
 
         assert MeetingAccess._detect_platform(GOOGLE_MEET_URL) == "google_meet"
+        assert MeetingAccess._detect_platform(GOOGLE_MEET_URL) == Platform.GOOGLE_MEET
 
     def test_zoom_url_detected(self):
         from modules.meeting_access import MeetingAccess
 
         assert MeetingAccess._detect_platform(ZOOM_URL) == "zoom"
 
-    def test_teams_url_detected(self):
+    def test_teams_enterprise_url_detected(self):
         from modules.meeting_access import MeetingAccess
 
         assert MeetingAccess._detect_platform(TEAMS_URL) == "teams"
+
+    def test_teams_live_url_detected(self):
+        """teams.live.com consumer meeting links must resolve to 'teams'."""
+        from modules.meeting_access import MeetingAccess
+
+        assert MeetingAccess._detect_platform(TEAMS_LIVE_URL) == "teams"
 
     def test_invalid_url_raises_platform_not_supported(self):
         from modules.meeting_access import MeetingAccess
@@ -205,9 +219,8 @@ class TestJoinGoogleMeet:
 
 
 class TestJoinZoom:
-    def test_display_name_sent_to_name_field(self, bot):
-        """Bot must type its name in the Zoom input field."""
-        name_el = MagicMock()
+    def test_display_name_sent_to_zoom_prejoin_script(self, bot):
+        """Bot name must be passed to the Zoom prejoin JS script."""
         join_btn = MagicMock()
 
         with (
@@ -216,14 +229,13 @@ class TestJoinZoom:
         ):
             wait_instance = MagicMock()
             mock_wait.return_value = wait_instance
-            wait_instance.until.side_effect = [name_el, join_btn]
+            wait_instance.until.return_value = join_btn
 
             bot.join(ZOOM_URL)
 
-        name_el.send_keys.assert_called_once_with("AI Meeting Assistant")
+        bot.driver.execute_script.assert_any_call(ANY, "AI Summarizer")
 
     def test_join_button_clicked_after_name(self, bot):
-        name_el = MagicMock()
         join_btn = MagicMock()
 
         with (
@@ -232,7 +244,7 @@ class TestJoinZoom:
         ):
             wait_instance = MagicMock()
             mock_wait.return_value = wait_instance
-            wait_instance.until.side_effect = [name_el, join_btn]
+            wait_instance.until.return_value = join_btn
 
             bot.join(ZOOM_URL)
 
@@ -253,12 +265,58 @@ class TestJoinZoom:
 # ──────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────
+# _teams_web_url: URL rewriting for teams.live.com
+# ──────────────────────────────────────────────────────────────
+
+
+class TestTeamsWebUrl:
+    def test_live_url_rewritten_to_v2_deeplink(self):
+        """teams.live.com/meet/<ID>?p=... must become /v2/#/meet/<ID>?p=...&anon=true&launchType=web."""
+        from modules.meeting_access import MeetingAccess
+
+        result = MeetingAccess._teams_web_url(TEAMS_LIVE_URL)
+        assert result.startswith("https://teams.live.com/v2/#/meet/9362297015184")
+        assert "anon=true" in result
+        assert "launchType=web" in result
+        assert "p=y7BwyN5fArqTg1vBql" in result
+
+    def test_enterprise_url_returned_unchanged(self):
+        """teams.microsoft.com URLs must pass through unmodified."""
+        from modules.meeting_access import MeetingAccess
+
+        result = MeetingAccess._teams_web_url(TEAMS_URL)
+        assert result == TEAMS_URL
+
+    def test_live_url_without_query_still_adds_params(self):
+        from modules.meeting_access import MeetingAccess
+
+        bare = "https://teams.live.com/meet/1234567890"
+        result = MeetingAccess._teams_web_url(bare)
+        assert "anon=true" in result
+        assert "launchType=web" in result
+
+
 class TestJoinTeams:
     def test_navigates_to_teams_url(self, bot):
+        """Enterprise URL – driver.get must use the original (unchanged) URL."""
         with patch("modules.meeting_access.WebDriverWait") as mock_wait:
             mock_wait.return_value.until.return_value = MagicMock()
             bot.join(TEAMS_URL)
         bot.driver.get.assert_called_with(TEAMS_URL)
+
+    def test_navigates_to_rewritten_live_url(self, bot):
+        """Live URL – driver.get must use the /v2/#/meet/ deep-link, not the original."""
+        with (
+            patch("modules.meeting_access.WebDriverWait") as mock_wait,
+            patch("modules.meeting_access.time.sleep"),
+        ):
+            mock_wait.return_value.until.return_value = MagicMock()
+            bot.join(TEAMS_LIVE_URL)
+
+        called_url = bot.driver.get.call_args[0][0]
+        assert "/v2/#/meet/" in called_url
+        assert "anon=true" in called_url
 
     def test_detected_platform_set_to_teams(self, bot):
         with patch("modules.meeting_access.WebDriverWait") as mock_wait:
@@ -266,19 +324,26 @@ class TestJoinTeams:
             bot.join(TEAMS_URL)
         assert bot.detected_platform == "teams"
 
+    def test_detected_platform_set_to_teams_for_live_url(self, bot):
+        with (
+            patch("modules.meeting_access.WebDriverWait") as mock_wait,
+            patch("modules.meeting_access.time.sleep"),
+        ):
+            mock_wait.return_value.until.return_value = MagicMock()
+            bot.join(TEAMS_LIVE_URL)
+        assert bot.detected_platform == "teams"
+
     def test_use_browser_link_clicked(self, bot):
-        """Bot must click the 'use browser' anchor to bypass app prompt."""
+        """Enterprise flow: bot must click the 'use browser' anchor."""
         browser_link = MagicMock()
         join_btn = MagicMock()
 
         with patch("modules.meeting_access.WebDriverWait") as mock_wait:
             wait_instance = MagicMock()
             mock_wait.return_value = wait_instance
-            # _join_teams makes 4 wait.until() calls:
-            #   1. use_browser_link (explicit)
-            #   2. continue_without_audio (_safe_click)
-            #   3. mute_mic (_safe_click)
-            #   4. join_button (explicit)
+            # Enterprise _join_teams makes 4 wait.until() calls:
+            #   1. use_browser_link  2. continue_without_audio
+            #   3. mute_mic          4. join_button
             wait_instance.until.side_effect = [browser_link, MagicMock(), MagicMock(), join_btn]
 
             bot.join(TEAMS_URL)
@@ -355,9 +420,9 @@ class TestRetryLoop:
 
         with (
             patch("modules.meeting_access.WebDriverWait") as mock_wait,
-            patch("modules.meeting_access.time.sleep"),
+            patch.object(bot, "_handle_zoom_waiting_room", side_effect=TimeoutException()),
         ):
-            mock_wait.return_value.until.side_effect = TimeoutException()
+            mock_wait.return_value.until.return_value = MagicMock()
 
             with pytest.raises(MeetingJoinError):
                 bot.join(ZOOM_URL)

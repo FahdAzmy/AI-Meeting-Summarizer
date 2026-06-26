@@ -35,9 +35,9 @@ const icons: Record<ToastType, React.ReactNode> = {
 };
 
 const toastStyles: Record<ToastType, string> = {
-  success: 'bg-white border-gray-200 text-gray-800 [&_svg]:text-emerald-500',
-  error:   'bg-white border-gray-200 text-gray-800 [&_svg]:text-red-500',
-  info:    'bg-white border-gray-200 text-gray-800 [&_svg]:text-blue-500',
+  success: 'bg-[var(--surface)] border-[var(--border)] text-[var(--text-primary)] [&_svg]:text-emerald-500',
+  error:   'bg-[var(--surface)] border-[var(--border)] text-[var(--text-primary)] [&_svg]:text-[var(--danger)]',
+  info:    'bg-[var(--surface)] border-[var(--border)] text-[var(--text-primary)] [&_svg]:text-[var(--primary)]',
 };
 
 export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
