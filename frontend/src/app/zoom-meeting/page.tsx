@@ -28,7 +28,7 @@
 import "@zoom/meetingsdk/dist/css/bootstrap.css";
 import "@zoom/meetingsdk/dist/css/react-select.css";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   parseZoomUrl,
@@ -61,7 +61,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ZoomMeetingPage() {
+function ZoomMeetingContent() {
   const searchParams = useSearchParams();
   const [status, setStatus] = useState<Status>("idle");
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -78,44 +78,29 @@ export default function ZoomMeetingPage() {
 
     void (async () => {
       try {
-        // Step 1: Parse URL
         setStatus("parsing");
-        console.info("[ZoomMeetingPage] Parsing URL:", meetingLink);
         const details = parseZoomUrl(meetingLink);
         if (!details) {
           throw new Error(`Invalid Zoom URL: "${meetingLink}"`);
         }
-        console.info("[ZoomMeetingPage] Parsed meeting:", details.meetingNumber, "passcode:", details.passcode ? "****" : "(none)");
 
-        // Step 2: Fetch signature from backend
         setStatus("fetching_token");
-        console.info("[ZoomMeetingPage] Fetching signature from backend…");
         const { signature, sdk_key } = await fetchZoomSignature(
           details.meetingNumber,
-          0 // role: 0 = attendee
+          0
         );
-        console.info("[ZoomMeetingPage] Got signature (length:", signature.length, ") sdk_key:", sdk_key.substring(0, 8) + "…");
 
-        // Step 3: Initialise SDK
         setStatus("initialising_sdk");
-        console.info("[ZoomMeetingPage] Initialising Zoom SDK…");
         await initZoomClient(sdk_key, "AI Summarizer");
-        console.info("[ZoomMeetingPage] SDK initialised successfully");
 
-        // Step 4: Register end-of-meeting listener BEFORE joining
-        //         (US2 – Native Meeting End Detection)
         const { ZoomMtg } = await import("@zoom/meetingsdk");
         ZoomMtg.inMeetingServiceListener("onMeetingStatus", (data: { meetingStatus: number }) => {
-          console.info("[ZoomMeetingPage] onMeetingStatus:", data.meetingStatus);
-          // meetingStatus === 3 means "disconnected" in the Zoom Web SDK
           if (data.meetingStatus === 3) {
             handleMeetingEnd(meetingId);
           }
         });
 
-        // Step 5: Join the meeting
         setStatus("joining");
-        console.info("[ZoomMeetingPage] Joining meeting…");
         await joinZoomMeeting({
           signature,
           sdkKey: sdk_key,
@@ -125,14 +110,12 @@ export default function ZoomMeetingPage() {
         });
 
         setStatus("in_meeting");
-        console.info("[ZoomMeetingPage] Successfully joined meeting:", details.meetingNumber);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[ZoomMeetingPage] Join failed:", message, err);
         setStatus("error");
         setErrorMessage(message);
 
-        // Notify backend of failure so the pipeline can be marked FAILED
         if (meetingId) {
           await notifyBackend(meetingId, "failed").catch(() => {});
         }
@@ -142,7 +125,6 @@ export default function ZoomMeetingPage() {
 
   // ── Event handler: meeting ended (US2) ───────────────────────────────────
   async function handleMeetingEnd(id: string) {
-    console.info("[ZoomMeetingPage] Meeting ended — notifying backend.");
     setStatus("meeting_ended");
     if (id) {
       await notifyBackend(id, "recording").catch((err) => {
@@ -217,6 +199,34 @@ const STATUS_LABELS: Record<Status, string> = {
   meeting_ended: "Meeting ended — processing recording…",
   error: "Error joining meeting",
 };
+
+function ZoomMeetingPageFallback() {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#0a0a0a",
+        color: "#a5b4fc",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: "13px",
+      }}
+    >
+      Loading…
+    </div>
+  );
+}
+
+export default function ZoomMeetingPage() {
+  return (
+    <Suspense fallback={<ZoomMeetingPageFallback />}>
+      <ZoomMeetingContent />
+    </Suspense>
+  );
+}
 
 function StatusBadge({ status }: { status: Status }) {
   const isError = status === "error";

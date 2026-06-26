@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from src.helpers.db import get_db
+from src.helpers.security import get_current_user
 from src.helpers.excel_generator import generate_all_meetings_excel, generate_single_meeting_excel
 from src.helpers.pdf_generator import generate_meeting_pdf
 from src.models.meeting import Meeting, MeetingStatus
+from src.models.user import User
 
 export_router = APIRouter(prefix="/export", tags=["export"])
 
@@ -34,10 +36,16 @@ def _safe_filename(text: str) -> str:
 
 
 @export_router.get("/meetings/excel")
-async def export_all_meetings_excel(db: AsyncSession = Depends(get_db)):
+async def export_all_meetings_excel(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         result = await db.execute(
-            select(Meeting).where(Meeting.status == MeetingStatus.COMPLETED)
+            select(Meeting).where(
+                Meeting.status == MeetingStatus.COMPLETED,
+                Meeting.company_id == current_user.company_id,
+            )
         )
         meetings = result.scalars().all()
     except Exception as exc:
@@ -64,14 +72,23 @@ async def export_all_meetings_excel(db: AsyncSession = Depends(get_db)):
 
 
 @export_router.get("/meetings/{id}/excel")
-async def export_single_meeting_excel(id: str, db: AsyncSession = Depends(get_db)):
+async def export_single_meeting_excel(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         try:
             meeting_uuid = uuid.UUID(id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid UUID format")
 
-        result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+        result = await db.execute(
+            select(Meeting).where(
+                Meeting.id == meeting_uuid,
+                Meeting.company_id == current_user.company_id,
+            )
+        )
         meeting = result.scalar_one_or_none()
     except HTTPException:
         raise
@@ -99,14 +116,23 @@ async def export_single_meeting_excel(id: str, db: AsyncSession = Depends(get_db
 
 
 @export_router.get("/meetings/{id}/pdf")
-async def export_single_meeting_pdf(id: str, db: AsyncSession = Depends(get_db)):
+async def export_single_meeting_pdf(
+    id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     try:
         try:
             meeting_uuid = uuid.UUID(id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid UUID format")
 
-        result = await db.execute(select(Meeting).where(Meeting.id == meeting_uuid))
+        result = await db.execute(
+            select(Meeting).where(
+                Meeting.id == meeting_uuid,
+                Meeting.company_id == current_user.company_id,
+            )
+        )
         meeting = result.scalar_one_or_none()
     except HTTPException:
         raise

@@ -20,6 +20,8 @@ Design contract
 
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -51,8 +53,21 @@ def client():
     Only the ``api_router`` is mounted — no database init, no middleware,
     no Settings validation.
     """
+    from src.helpers.db import get_db
+    from src.helpers.security import get_current_user
+
+    async def fake_current_user():
+        user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        return SimpleNamespace(id=user_id, company_id=company_id, role="hr")
+
+    async def fake_db():
+        yield AsyncMock()
+
     stub_app = FastAPI()
     stub_app.include_router(api_router, prefix="/api")
+    stub_app.dependency_overrides[get_current_user] = fake_current_user
+    stub_app.dependency_overrides[get_db] = fake_db
     return TestClient(stub_app, raise_server_exceptions=True)
 
 
@@ -64,11 +79,14 @@ def client():
 def test_trigger_returns_202_accepted(client) -> None:
     """``POST /api/trigger`` must respond with HTTP 202 Accepted."""
     mock_fn = AsyncMock()
-    with patch("src.orchestrator.run_pipeline", mock_fn):
+    with (
+        patch("src.orchestrator.run_pipeline", mock_fn),
+        patch("src.routes.api.resolve_participants", AsyncMock(return_value=EMAILS)),
+    ):
         with patch.dict("src.orchestrator.__dict__", {"run_pipeline": mock_fn}):
             response = client.post(
                 TRIGGER_URL,
-                json={"meeting_link": MEETING_LINK, "emails": EMAILS, "storage": STORAGE},
+                json={"meeting_link": MEETING_LINK, "storage": STORAGE},
             )
     assert response.status_code == 202, f"Expected 202 but got {response.status_code}"
 
@@ -76,10 +94,13 @@ def test_trigger_returns_202_accepted(client) -> None:
 def test_trigger_response_body_shape(client) -> None:
     """The response JSON must contain message, meeting_link, and storage."""
     mock_fn = AsyncMock()
-    with patch("src.orchestrator.run_pipeline", mock_fn):
+    with (
+        patch("src.orchestrator.run_pipeline", mock_fn),
+        patch("src.routes.api.resolve_participants", AsyncMock(return_value=EMAILS)),
+    ):
         response = client.post(
             TRIGGER_URL,
-            json={"meeting_link": MEETING_LINK, "emails": EMAILS, "storage": STORAGE},
+            json={"meeting_link": MEETING_LINK, "storage": STORAGE},
         )
     body = response.json()
     assert "message" in body
@@ -91,7 +112,10 @@ def test_trigger_response_body_shape(client) -> None:
 def test_trigger_defaults_storage_to_email(client) -> None:
     """When ``storage`` is omitted, it should default to ``'email'``."""
     mock_fn = AsyncMock()
-    with patch("src.orchestrator.run_pipeline", mock_fn):
+    with (
+        patch("src.orchestrator.run_pipeline", mock_fn),
+        patch("src.routes.api.resolve_participants", AsyncMock(return_value=[])),
+    ):
         response = client.post(
             TRIGGER_URL,
             json={"meeting_link": MEETING_LINK},
@@ -102,7 +126,7 @@ def test_trigger_defaults_storage_to_email(client) -> None:
 
 def test_trigger_rejects_missing_meeting_link(client) -> None:
     """A request without ``meeting_link`` must be rejected with 422."""
-    response = client.post(TRIGGER_URL, json={"emails": EMAILS})
+    response = client.post(TRIGGER_URL, json={"team_ids": []})
     assert response.status_code == 422
 
 
@@ -120,12 +144,15 @@ def test_trigger_dispatches_run_pipeline_with_correct_args(client) -> None:
     it will have been called.
     """
     mock_fn = AsyncMock()
-    with patch("src.orchestrator.run_pipeline", mock_fn):
+    with (
+        patch("src.orchestrator.run_pipeline", mock_fn),
+        patch("src.routes.api.resolve_participants", AsyncMock(return_value=EMAILS)),
+    ):
         response = client.post(
             TRIGGER_URL,
             json={
                 "meeting_link": MEETING_LINK,
-                "emails": EMAILS,
+                "team_ids": [],
                 "storage": STORAGE,
             },
         )
@@ -133,9 +160,15 @@ def test_trigger_dispatches_run_pipeline_with_correct_args(client) -> None:
     assert response.status_code == 202
 
     from unittest.mock import ANY
+
     mock_fn.assert_called_once_with(
         meeting_link=MEETING_LINK,
         emails=EMAILS,
         storage=STORAGE,
         session_id=ANY,
+        title=None,
+        team_ids=[],
+        member_ids=[],
+        company_id=ANY,
+        created_by=ANY,
     )

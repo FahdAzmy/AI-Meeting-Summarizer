@@ -9,13 +9,23 @@ All MongoDB/Beanie dual-mode code has been removed.
 import uuid
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import (
+    Column,
+    String,
+    Integer,
+    DateTime,
+    JSON,
+    Text,
+    ForeignKey,
+    Enum as SQLEnum,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from src.models.base import Base
 
 
 class MeetingStatus(str, PyEnum):
     """Pipeline lifecycle state for a Meeting record."""
+
     PENDING = "pending"
     PROCESSING = "processing"
     JOINING = "joining"
@@ -29,6 +39,7 @@ class MeetingStatus(str, PyEnum):
 
 class Meeting(Base):
     """SQLAlchemy model representing a meeting in PostgreSQL."""
+
     __tablename__ = "meetings"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -36,7 +47,6 @@ class Meeting(Base):
     meeting_link = Column(String(500), nullable=True)
     session_id = Column(String(100), nullable=True, index=True)
     platform = Column(String(50), nullable=True)
-    scheduled_time = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

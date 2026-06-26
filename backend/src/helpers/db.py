@@ -7,6 +7,7 @@ All MongoDB/ODM drivers and related configuration code have been removed.
 """
 
 import logging
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from src.helpers.config import settings
 
@@ -39,10 +40,16 @@ async def init_db() -> None:
     from src.models.base import Base  # noqa: F401 — registers all models via __init__
     import src.models  # noqa: F401
 
-    async with postgres_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    logger.info("PostgreSQL connection established and tables verified")
+    app_env = os.getenv("APP_ENV", "development").lower()
+    if app_env != "production":
+        async with postgres_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("PostgreSQL connection established and tables auto-created (dev mode)")
+    else:
+        logger.info(
+            "PostgreSQL connection established (production mode — "
+            "use 'alembic upgrade head' for schema migrations)"
+        )
 
 
 async def get_db():

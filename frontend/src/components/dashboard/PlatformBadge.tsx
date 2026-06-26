@@ -22,7 +22,7 @@ export function PlatformBadge({ platform }: PlatformBadgeProps) {
   const { label, classes } = getPlatformInfo(platform);
 
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-medium border ${classes}`}>
+    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${classes}`}>
       {label}
     </span>
   );

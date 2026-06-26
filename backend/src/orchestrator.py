@@ -56,14 +56,17 @@ logger = logging.getLogger(__name__)
 # Dependency resolution — real packages with lightweight sentinel fallback
 # ---------------------------------------------------------------------------
 
+
 def _missing(name: str):
     """Return a sentinel class that blows up loudly if ever instantiated."""
+
     class _Sentinel:
         def __init__(self, *a, **kw):
             raise RuntimeError(
                 f"{name} is not installed and was not mocked. "
                 "Patch it in your test or install the real package."
             )
+
     _Sentinel.__name__ = name
     _Sentinel.__qualname__ = name
     return _Sentinel
@@ -72,7 +75,7 @@ def _missing(name: str):
 try:
     from src.models.meeting import Meeting, MeetingStatus
 except ImportError:  # pragma: no cover
-    Meeting = _missing("Meeting")           # type: ignore[assignment,misc]
+    Meeting = _missing("Meeting")  # type: ignore[assignment,misc]
     MeetingStatus = _missing("MeetingStatus")  # type: ignore[assignment,misc]
 
 try:
@@ -103,6 +106,7 @@ except ImportError:  # pragma: no cover
 try:
     from config.settings import Config as _Config
     from src.helpers.zoom_sdk import parse_zoom_url as _parse_zoom_url
+
     _zoom_sdk_available = True
 except ImportError:  # pragma: no cover
     _Config = _missing("Config")  # type: ignore[assignment,misc]
@@ -113,11 +117,14 @@ except ImportError:  # pragma: no cover
 from sqlalchemy import select  # noqa: E402
 from src.helpers.db import SessionLocal  # noqa: E402  (after sentinels)
 from src.models.company import Company  # noqa: E402
+from src.models.meeting_participant import MeetingParticipant  # noqa: E402
+from src.models.meeting_team import MeetingTeam  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _detect_platform(link: str) -> str | None:
     link_lower = link.lower()
@@ -150,12 +157,17 @@ def _extract_audio(video_path: str) -> str:
     try:
         subprocess.run(
             [
-                "ffmpeg", "-y",
-                "-i", video_path,
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
                 "-vn",
-                "-acodec", "pcm_s16le",
-                "-ar", "16000",
-                "-ac", "1",
+                "-acodec",
+                "pcm_s16le",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
                 audio_path,
             ],
             check=True,
@@ -166,8 +178,10 @@ def _extract_audio(video_path: str) -> str:
         audio_size = os.path.getsize(audio_path)
         logger.info(
             "Audio extracted: %s (%d KB) → %s (%d KB)",
-            video_path, video_size // 1024,
-            audio_path, audio_size // 1024,
+            video_path,
+            video_size // 1024,
+            audio_path,
+            audio_size // 1024,
         )
         return audio_path
 
@@ -178,9 +192,7 @@ def _extract_audio(video_path: str) -> str:
         )
         return video_path
     except subprocess.CalledProcessError as exc:
-        logger.warning(
-            "ffmpeg audio extraction failed (%s) — using raw video.", exc
-        )
+        logger.warning("ffmpeg audio extraction failed (%s) — using raw video.", exc)
         return video_path
 
 
@@ -207,9 +219,7 @@ async def _update_meeting_status(
     """Open a short-lived session to update a meeting's status and optional fields."""
 
     async with SessionLocal() as db:
-        result = await db.execute(
-            select(Meeting).where(Meeting.id == meeting_id)
-        )
+        result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
         row = result.scalar_one_or_none()
         if row is None:
             logger.warning("_update_meeting_status: meeting %s not found", meeting_id)
@@ -232,6 +242,11 @@ async def run_pipeline(
     emails: list[str],
     storage: str,
     session_id: str | None = None,
+    title: str | None = None,
+    team_ids: list[str] | None = None,
+    member_ids: list[str] | None = None,
+    company_id: uuid.UUID | None = None,
+    created_by: uuid.UUID | None = None,
 ) -> None:
     """Orchestrate the full AI meeting-summariser pipeline."""
 
@@ -241,26 +256,65 @@ async def run_pipeline(
 
     try:
         async with SessionLocal() as db:
-            company = await _get_or_create_default_company(db)
+            company = None
+            if company_id is None:
+                company = await _get_or_create_default_company(db)
+                company_id = company.id
             new_meeting = Meeting(
+                title=title,
                 meeting_link=meeting_link,
                 session_id=session_id,
                 platform=platform_name,
-                company_id=company.id,
+                company_id=company_id,
+                created_by=created_by,
                 status=MeetingStatus.PROCESSING,
             )
             db.add(new_meeting)
+            await db.flush()
+            for team_id in team_ids or []:
+                try:
+                    db.add(
+                        MeetingTeam(
+                            meeting_id=new_meeting.id, team_id=uuid.UUID(str(team_id))
+                        )
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid team_id for meeting %s: %s",
+                        new_meeting.id,
+                        team_id,
+                    )
+            for member_id in member_ids or []:
+                try:
+                    db.add(
+                        MeetingParticipant(
+                            meeting_id=new_meeting.id,
+                            member_id=uuid.UUID(str(member_id)),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Ignoring invalid member_id for meeting %s: %s",
+                        new_meeting.id,
+                        member_id,
+                    )
             await db.commit()
             await db.refresh(new_meeting)
             meeting_id = new_meeting.id
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Pipeline FAILED to initialise DB record | link=%s | error=%s",
-            meeting_link, exc,
+            meeting_link,
+            exc,
         )
         return
 
-    logger.info("Pipeline started | id=%s | link=%s | storage=%s", meeting_id, meeting_link, storage)
+    logger.info(
+        "Pipeline started | id=%s | link=%s | storage=%s",
+        meeting_id,
+        meeting_link,
+        storage,
+    )
 
     # Keep a lightweight proxy object so the OutputStorage interface (which
     # expects a meeting object with an .id attribute) works without changes.
@@ -292,16 +346,23 @@ async def run_pipeline(
 
         if _use_zoom_sdk:
             import urllib.parse as _urlparse
+
             _sdk_page_url = (
                 "http://localhost:3000/zoom-meeting"
                 f"?link={_urlparse.quote(meeting_link, safe='')}"
                 f"&meeting_id={meeting_id}"
             )
-            logger.info("Stage JOINING via Zoom SDK | id=%s | sdk_page=%s", meeting_id, _sdk_page_url)
+            logger.info(
+                "Stage JOINING via Zoom SDK | id=%s | sdk_page=%s",
+                meeting_id,
+                _sdk_page_url,
+            )
             access = MeetingAccess()
             await asyncio.to_thread(access.join, _sdk_page_url)
         else:
-            logger.info("Stage JOINING via Selenium | id=%s | link=%s", meeting_id, meeting_link)
+            logger.info(
+                "Stage JOINING via Selenium | id=%s | link=%s", meeting_id, meeting_link
+            )
             access = MeetingAccess()
             await asyncio.to_thread(access.join, meeting_link)
 
@@ -316,7 +377,9 @@ async def run_pipeline(
         try:
             raw_recording: str = await asyncio.to_thread(capture.stop)
         except Exception as stop_exc:
-            logger.warning("OBS stop failed (%s) — trying to find latest recording.", stop_exc)
+            logger.warning(
+                "OBS stop failed (%s) — trying to find latest recording.", stop_exc
+            )
             raw_recording = await asyncio.to_thread(capture._find_latest_recording)
             if not raw_recording:
                 raise
@@ -330,7 +393,9 @@ async def run_pipeline(
 
         _cfg = _Config()
         transcriber = Transcription(provider=_cfg.STT_PROVIDER)
-        transcript: dict[str, Any] = await asyncio.to_thread(transcriber.transcribe, audio_path)
+        transcript: dict[str, Any] = await asyncio.to_thread(
+            transcriber.transcribe, audio_path
+        )
 
         # ── Stage 4: Summarise ────────────────────────────────────────────
         await _update_meeting_status(meeting_id, MeetingStatus.SUMMARISING)
@@ -371,7 +436,9 @@ async def run_pipeline(
         current_status: Any = None
         try:
             async with SessionLocal() as db:
-                result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
+                result = await db.execute(
+                    select(Meeting).where(Meeting.id == meeting_id)
+                )
                 row = result.scalar_one_or_none()
                 if row:
                     current_status = row.status

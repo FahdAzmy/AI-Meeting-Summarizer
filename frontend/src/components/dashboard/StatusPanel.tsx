@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { api } from '../../lib/api';
-import { PipelineStatus } from '../../lib/types';
+import React, { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/api";
+import { PipelineStatus } from "@/lib/types";
 
 interface StatusPanelProps {
   sessionId: string;
@@ -8,31 +8,27 @@ interface StatusPanelProps {
 }
 
 const steps = [
-  'Joining meeting room',
-  'Recording audio stream',
-  'Transcribing speech',
-  'Analyzing content',
-  'Generating summary',
-  'Finalizing report',
+  "Joining meeting room",
+  "Recording audio stream",
+  "Transcribing speech",
+  "Analyzing content",
+  "Generating summary",
+  "Finalizing report",
 ];
 
 export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Stable ref for the callback so it never triggers useEffect re-runs
   const onCompleteRef = useRef(onComplete);
-  onCompleteRef.current = onComplete;
-
-  // Guard against overlapping fetches
   const isFetchingRef = useRef(false);
+
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     let isMounted = true;
     let interval: NodeJS.Timeout;
 
     const fetchStatus = async () => {
-      // Skip if a previous fetch is still in flight
       if (isFetchingRef.current) return;
       isFetchingRef.current = true;
 
@@ -40,7 +36,7 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
         const data = await api.getStatus(sessionId);
         if (isMounted) {
           setStatus(data);
-          if (data.status === 'completed' || data.status === 'failed') {
+          if (data.status === "completed" || data.status === "failed") {
             clearInterval(interval);
             onCompleteRef.current();
           }
@@ -48,7 +44,7 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
       } catch (err) {
         console.error(err);
         if (isMounted) {
-          setError('Could not communicate with the pipeline. Please try again.');
+          setError("Could not communicate with the pipeline. Please try again.");
           clearInterval(interval);
         }
       } finally {
@@ -63,13 +59,13 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [sessionId]); // onComplete removed — tracked via ref
+  }, [sessionId]);
 
   if (error) {
     return (
-      <div className="flex items-start gap-3 px-4 py-3.5 bg-red-50 border border-red-100 rounded-xl text-sm text-red-700">
-        <svg className="w-4 h-4 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      <div className="flex items-start gap-3 rounded-lg border border-[var(--danger)]/20 bg-[var(--danger)]/5 px-4 py-3.5 text-sm text-[var(--danger)]">
+        <svg className="mt-0.5 h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0" />
         </svg>
         {error}
       </div>
@@ -78,10 +74,10 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
 
   if (!status) {
     return (
-      <div className="bg-white border border-gray-200 rounded-xl px-6 py-5 shadow-sm">
+      <div className="panel px-6 py-5">
         <div className="flex items-center gap-3">
-          <div className="w-4 h-4 rounded-full border-2 border-gray-300 border-t-gray-900 animate-spin" />
-          <span className="text-sm text-gray-500">Connecting to pipeline...</span>
+          <div className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--primary)]" />
+          <span className="text-sm text-[var(--text-secondary)]">Connecting to pipeline...</span>
         </div>
       </div>
     );
@@ -91,46 +87,60 @@ export function StatusPanel({ sessionId, onComplete }: StatusPanelProps) {
   const currentStepLabel = steps[status.step - 1] ?? status.message;
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-      <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-900">Processing pipeline</h3>
-        <span className="text-xs font-medium text-gray-500 capitalize bg-gray-100 px-2.5 py-1 rounded-full">
+    <div className="panel overflow-hidden">
+      <div className="panel-header flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)]">Processing pipeline</h3>
+        <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-medium capitalize text-[var(--text-secondary)] ring-1 ring-[var(--border)]">
           {status.status}
         </span>
       </div>
-      <div className="px-6 py-5 space-y-4">
-        {/* Progress bar */}
+      <div className="space-y-4 px-6 py-5">
         <div>
-          <div className="flex justify-between items-center mb-2">
-            <span className="text-sm text-gray-700 font-medium">{currentStepLabel}</span>
-            <span className="text-xs text-gray-400">{status.step} / {status.total_steps}</span>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-medium text-[var(--text-primary)]">{currentStepLabel}</span>
+            <span className="text-xs text-[var(--text-muted)]">{status.step} / {status.total_steps}</span>
           </div>
-          <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-recessed)]">
             <div
-              className="bg-gray-900 h-1.5 rounded-full transition-all duration-700 ease-out"
+              className="h-1.5 rounded-full bg-[var(--primary)] transition-all duration-700 ease-out"
               style={{ width: `${progressPct}%` }}
             />
           </div>
         </div>
 
-        {/* Step list */}
         <div className="grid grid-cols-2 gap-1.5">
-          {steps.map((step, i) => {
-            const stepNum = i + 1;
+          {steps.map((step, index) => {
+            const stepNum = index + 1;
             const isDone = stepNum < status.step;
             const isCurrent = stepNum === status.step;
+
             return (
-              <div key={step} className={`flex items-center gap-2 text-xs rounded-lg px-2.5 py-1.5 ${
-                isDone    ? 'text-gray-400' :
-                isCurrent ? 'text-gray-900 bg-gray-50 font-medium' :
-                            'text-gray-300'
-              }`}>
-                <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0 ${
-                  isDone    ? 'bg-emerald-100 text-emerald-600' :
-                  isCurrent ? 'bg-gray-900 text-white' :
-                              'bg-gray-100 text-gray-400'
-                }`}>
-                  {isDone ? '✓' : stepNum}
+              <div
+                key={step}
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs ${
+                  isDone
+                    ? "text-[var(--text-muted)]"
+                    : isCurrent
+                      ? "bg-[var(--surface-recessed)] font-medium text-[var(--text-primary)]"
+                      : "text-[var(--border-strong)]"
+                }`}
+              >
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] ${
+                    isDone
+                      ? "bg-emerald-100 text-emerald-700"
+                      : isCurrent
+                        ? "bg-[var(--primary)] text-white"
+                        : "bg-[var(--surface-recessed)] text-[var(--text-muted)]"
+                  }`}
+                >
+                  {isDone ? (
+                    <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 12 12" stroke="currentColor" strokeWidth={2}>
+                      <path d="M2.5 6.5 5 9l4.5-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  ) : (
+                    stepNum
+                  )}
                 </span>
                 {step}
               </div>

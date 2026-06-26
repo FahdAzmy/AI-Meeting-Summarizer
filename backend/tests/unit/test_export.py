@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,6 +27,7 @@ def _make_mock_meeting(**overrides: Any) -> MagicMock:
     from datetime import datetime, timezone
     from src.models.meeting import MeetingStatus
     meeting = MagicMock()
+    meeting_company_id = overrides.get("company_id", uuid.uuid4())
     meeting.id = overrides.get("id", uuid.uuid4())
     meeting.title = overrides.get("title", "Sprint Standup")
     meeting.platform = overrides.get("platform", "Google Meet")
@@ -38,6 +40,7 @@ def _make_mock_meeting(**overrides: Any) -> MagicMock:
     meeting.speaker_stats = overrides.get("speaker_stats", {"speakers": [{"speaker": "Alice"}]})
     meeting.transcript = overrides.get("transcript", "Alice: Let's go.")
     meeting.status = overrides.get("status", MeetingStatus.COMPLETED)
+    meeting.company_id = meeting_company_id
     return meeting
 
 
@@ -67,6 +70,12 @@ def _make_db_override(query_result):
                   OR scalar_one_or_none() depending on the test.
     """
     from src.helpers.db import get_db
+    from src.helpers.security import get_current_user
+    company_id = uuid.uuid4()
+    if isinstance(query_result, list) and query_result:
+        company_id = query_result[0].company_id
+    elif query_result:
+        company_id = query_result.company_id
 
     async def _fake_get_db():
         mock_session = AsyncMock()
@@ -86,7 +95,10 @@ def _make_db_override(query_result):
         mock_session.execute = AsyncMock(return_value=mock_exec_result)
         yield mock_session
 
-    return {get_db: _fake_get_db}
+    async def _fake_current_user():
+        return SimpleNamespace(id=uuid.uuid4(), company_id=company_id, role="hr")
+
+    return {get_db: _fake_get_db, get_current_user: _fake_current_user}
 
 
 # ---------------------------------------------------------------------------

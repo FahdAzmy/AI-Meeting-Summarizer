@@ -1,20 +1,20 @@
 "use client";
 
-import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { api } from '@/lib/api';
-import { Meeting } from '@/lib/types';
-import { SummarySection } from '@/components/detail/SummarySection';
-import { ActionItemsTable } from '@/components/detail/ActionItemsTable';
-import { TranscriptViewer } from '@/components/detail/TranscriptViewer';
-import { SpeakerStats } from '@/components/detail/SpeakerStats';
-import { useToast } from '@/components/ui/Toast';
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { Meeting } from "@/lib/types";
+import { SummarySection } from "@/components/detail/SummarySection";
+import { ActionItemsTable } from "@/components/detail/ActionItemsTable";
+import { TranscriptViewer } from "@/components/detail/TranscriptViewer";
+import { useToast } from "@/components/ui/Toast";
+import { Button } from "@/components/ui/Button";
+import { StatusBadge } from "@/components/history/StatusBadge";
 
 export default function MeetingDetail() {
-  const params = useParams();
+  const params = useParams<{ id: string }>();
   const router = useRouter();
-  const id = params.id as string;
   const { showToast } = useToast();
 
   const [meeting, setMeeting] = useState<Meeting | null>(null);
@@ -23,24 +23,28 @@ export default function MeetingDetail() {
   const [isExportingExcel, setIsExportingExcel] = useState(false);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchDetail = async () => {
       try {
-        const data = await api.getMeeting(id);
-        setMeeting(data);
+        const data = await api.getMeeting(params.id);
+        if (isMounted) setMeeting(data);
       } catch (err) {
         console.error(err);
-        router.replace(`/history/${id}/not-found`);
+        router.replace(`/history/${params.id}/not-found`);
       } finally {
-        setIsLoading(false);
+        if (isMounted) setIsLoading(false);
       }
     };
     fetchDetail();
-  }, [id, router]);
+    return () => {
+      isMounted = false;
+    };
+  }, [params.id, router]);
 
   const handleExportPdf = async () => {
     setIsExportingPdf(true);
     try {
-      await api.exportMeetingPdf(id);
+      await api.exportMeetingPdf(params.id);
       showToast("PDF downloaded successfully.", "success");
     } catch (error) {
       console.error(error);
@@ -53,7 +57,7 @@ export default function MeetingDetail() {
   const handleExportExcel = async () => {
     setIsExportingExcel(true);
     try {
-      await api.exportMeetingExcel(id);
+      await api.exportMeetingExcel(params.id);
       showToast("Excel downloaded successfully.", "success");
     } catch (error) {
       console.error(error);
@@ -65,135 +69,115 @@ export default function MeetingDetail() {
 
   if (isLoading) {
     return (
-      <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-10 h-10 rounded-full border-2 border-stone-200 border-t-emerald-600 animate-spin" />
-          <p className="text-stone-400 text-sm font-medium animate-pulse">Loading meeting details...</p>
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-[var(--border)] border-t-[var(--primary)]" />
+          <p className="text-sm font-medium text-[var(--text-secondary)]">Loading meeting details...</p>
         </div>
       </div>
     );
   }
 
-  if (!meeting) {
-    return null;
-  }
+  if (!meeting) return null;
 
-  const formatDate = (date: string | Date) => {
-    const d = new Date(date);
-    return d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  };
+  const formattedDate = new Date(meeting.date).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 
-  const formatDuration = (mins: number | null) => {
-    if (!mins) return 'N/A';
-    const hrs = Math.floor(mins / 60);
-    const minsRem = mins % 60;
-    if (hrs > 0) return `${hrs}h ${minsRem}m`;
-    return `${mins}m`;
-  };
+  const duration = (() => {
+    if (!meeting.duration_minutes) return "N/A";
+    const hours = Math.floor(meeting.duration_minutes / 60);
+    const minutes = meeting.duration_minutes % 60;
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  })();
 
-  const statusColors: Record<string, string> = {
-    completed: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    processing: 'bg-amber-50 text-amber-700 border-amber-200',
-    failed: 'bg-red-50 text-red-700 border-red-200',
-  };
+  const participantCount = meeting.participants?.length ?? 0;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 animate-fade-up">
-      <Link
-        href="/history"
-        className="inline-flex items-center gap-2 text-stone-400 hover:text-stone-600 text-sm font-medium mb-6 transition-colors group"
-      >
-        <svg className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-        </svg>
-        Back to History
-      </Link>
-
-      <div className="relative mb-8">
-        <div className="absolute top-0 right-0 flex items-center gap-3">
-          {meeting.status === 'completed' && (
-            <>
-              <button
-                onClick={handleExportPdf}
-                disabled={isExportingPdf}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-stone-200 text-stone-700 text-sm font-semibold hover:bg-stone-50 hover:border-stone-300 transition-all shadow-sm active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isExportingPdf ? (
-                  <div className="w-4 h-4 rounded-full border-2 border-stone-300 border-t-red-600 animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                )}
-                {isExportingPdf ? "Exporting..." : "PDF"}
-              </button>
-              <button
-                onClick={handleExportExcel}
-                disabled={isExportingExcel}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-stone-900 text-white text-sm font-semibold hover:bg-stone-800 transition-all shadow-lg shadow-stone-900/10 active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isExportingExcel ? (
-                  <div className="w-4 h-4 rounded-full border-2 border-stone-600 border-t-white animate-spin" />
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                )}
-                {isExportingExcel ? "Exporting..." : "Excel"}
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className="pr-48">
-          <div className="flex items-center gap-3 mb-3">
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold border ${statusColors[meeting.status] || 'bg-stone-100 text-stone-600 border-stone-200'}`}>
-              {meeting.status?.toUpperCase()}
-            </span>
-            {meeting.platform && <span className="text-stone-400 text-sm">{meeting.platform}</span>}
+    <div className="page-canvas animate-fade-up">
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <Link href="/history" className="flex items-center gap-2 text-sm font-medium text-[var(--text-secondary)] transition-colors hover:text-[var(--primary)]">
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="m15 19-7-7 7-7" />
+          </svg>
+          History
+        </Link>
+        {meeting.status === "completed" && (
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" onClick={handleExportPdf} disabled={isExportingPdf}>
+              {isExportingPdf ? "Exporting" : "Export PDF"}
+            </Button>
+            <Button type="button" variant="outline" onClick={handleExportExcel} disabled={isExportingExcel}>
+              {isExportingExcel ? "Exporting" : "Export Excel"}
+            </Button>
           </div>
-          <h1 className="font-heading text-3xl sm:text-4xl font-bold text-stone-900 leading-tight mb-4">
-            {meeting.title || 'Meeting'}
-          </h1>
-          <div className="flex flex-wrap items-center gap-y-2 gap-x-6 text-stone-500 text-sm">
-            <div className="flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              {formatDate(meeting.date)}
-            </div>
-            <div className="flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              {formatDuration(meeting.duration_minutes)}
-            </div>
-          </div>
-
-          {meeting.status === 'failed' && meeting.error_message && (
-            <div className="mt-6 p-4 rounded-xl bg-red-50 border border-red-200">
-              <div className="flex items-start gap-3">
-                <svg className="w-5 h-5 text-red-600 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <div>
-                  <h3 className="text-sm font-semibold text-red-800">Pipeline Failed</h3>
-                  <p className="text-sm text-red-700 mt-1">{meeting.error_message}</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
-      <div className="relative">
-        <div className="absolute left-8 top-0 bottom-0 w-px bg-gradient-to-b from-stone-200 via-stone-300 to-transparent" />
-        
-        <div className="space-y-6">
+      <div className="mb-6 flex flex-col justify-between gap-4 border-b border-[var(--border)] pb-6 lg:flex-row lg:items-start">
+        <div>
+          <h1 className="max-w-3xl text-3xl font-bold text-[var(--text-primary)]">{meeting.title || "Meeting"}</h1>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <span className="chip">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3M5 11h14M5 21h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2" />
+              </svg>
+              {formattedDate}
+            </span>
+            <span className="chip">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 1 1-18 0 9 9 0 0 1 18 0" />
+              </svg>
+              {duration}
+            </span>
+            <span className="chip">
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.7}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9.5 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.9" />
+              </svg>
+              {participantCount} attendees
+            </span>
+          </div>
+        </div>
+        <StatusBadge status={meeting.status} />
+      </div>
+
+      {meeting.status === "failed" && meeting.error_message && (
+        <div className="mb-6 rounded-lg border border-[var(--danger)]/20 bg-[var(--danger)]/5 p-4 text-sm text-[var(--danger)]">
+          <p className="font-semibold">Pipeline failed</p>
+          <p className="mt-1">{meeting.error_message}</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-12 gap-6">
+        <div className="col-span-12 space-y-6 xl:col-span-8">
           <SummarySection summary={meeting.summary} />
           <ActionItemsTable actionItems={meeting.action_items} decisions={meeting.decisions} />
           <TranscriptViewer transcript={meeting.transcript} />
         </div>
+
+        <aside className="col-span-12 space-y-6 xl:col-span-4">
+          <section className="panel overflow-hidden">
+            <div className="panel-header">
+              <h2 className="text-sm font-semibold text-[var(--text-primary)]">Meeting Info</h2>
+            </div>
+            <dl className="divide-y divide-[var(--border)] text-sm">
+              <div className="flex items-center justify-between gap-4 px-5 py-4">
+                <dt className="text-[var(--text-secondary)]">Platform</dt>
+                <dd className="font-medium text-[var(--text-primary)]">{meeting.platform || "--"}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-4 px-5 py-4">
+                <dt className="text-[var(--text-secondary)]">Session ID</dt>
+                <dd className="truncate font-mono text-xs text-[var(--text-primary)]">{meeting.session_id}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-4 px-5 py-4">
+                <dt className="text-[var(--text-secondary)]">Participants</dt>
+                <dd className="font-medium text-[var(--text-primary)]">{participantCount}</dd>
+              </div>
+            </dl>
+          </section>
+        </aside>
       </div>
     </div>
   );
